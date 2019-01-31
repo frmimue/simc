@@ -6,7 +6,7 @@
 #define SIMULATIONCRAFT_H
 
 #define SC_MAJOR_VERSION "810"
-#define SC_MINOR_VERSION "01"
+#define SC_MINOR_VERSION "02"
 #define SC_VERSION ( SC_MAJOR_VERSION "-" SC_MINOR_VERSION )
 #define SC_BETA 0
 #if SC_BETA
@@ -509,6 +509,7 @@ struct actor_target_data_t : public actor_pair_t, private noncopyable
     buff_t* dead_ahead;
     buff_t* battlefield_debuff;
     buff_t* wasting_infection;
+    buff_t* everchill;
   } debuff;
 
   struct atd_dot_t
@@ -1122,6 +1123,22 @@ struct sim_t : private sc_thread_t
     int                 reorigination_array_stacks = 0;
     /// Allow Reorigination Array to ignore scale factor stat changes (default false)
     bool                reorigination_array_ignore_scale_factors = false;
+    /// Chance to pick up visage spawned by Seductive Power
+    double              seductive_power_pickup_chance = 1.0;
+    /// Initial stacks for Seductive Power buff
+    int                 initial_seductive_power_stacks = 0;
+    /// Randomize Variable Intensity Gigavolt Oscillating Reactor start-of-combat oscillation
+    bool                randomize_oscillation = true;
+    /// Automatically use Oscillating Overload on max stack, true = yes if no use_item, 0 = no
+    bool                auto_oscillating_overload = true;
+    /// Is the actor in Zuldazar? Relevant for one of the set bonuses.
+    bool                zuldazar = false;
+    /// Treacherous Covenant update period.
+    timespan_t          covenant_period = 1.0_s;
+    /// Chance to gain the buff on each Treacherous Covenant update.
+    double              covenant_chance = 1.0;
+    /// Chance to gain a stack of Incandescent Sliver each time it ticks.
+    double              incandescent_sliver_chance = 1.0;
   } bfa_opts;
 
   // Expansion specific data
@@ -1204,7 +1221,7 @@ struct sim_t : private sc_thread_t
   int solo_raid;
   int global_item_upgrade_level;
   bool maximize_reporting;
-  std::string apikey;
+  std::string apikey, user_apitoken;
   bool distance_targeting_enabled;
   bool ignore_invulnerable_targets;
   bool enable_dps_healing;
@@ -2768,7 +2785,9 @@ struct cooldown_t
   // the user would react to rather than plan ahead for.
   void adjust( timespan_t, bool requires_reaction = true );
   void adjust_recharge_multiplier(); // Reacquire cooldown recharge multiplier from the action to adjust the cooldown time
-  void reset( bool require_reaction, bool all_charges = false );
+  // Instalty recharge a cooldown. For multicharge cooldowns, charges_ specifies how many charges to reset.
+  // If less than zero, all charges are reset.
+  void reset( bool require_reaction, int charges_ = 1 );
   void start( action_t* action, timespan_t override = timespan_t::min(), timespan_t delay = timespan_t::zero() );
   void start( timespan_t override = timespan_t::min(), timespan_t delay = timespan_t::zero() );
 
@@ -7497,6 +7516,8 @@ player_t* from_local_json( sim_t*,
                          );
 
 bool download_item( item_t&, cache::behavior_e b = cache::items() );
+void token_load();
+void token_save();
 }
 
 // HTTP Download  ===========================================================
@@ -7515,8 +7536,9 @@ void cache_load( const std::string& file_name );
 void cache_save( const std::string& file_name );
 bool clear_cache( sim_t*, const std::string& name, const std::string& value );
 
-bool get( std::string& result, const std::string& url, const std::string& cleanurl, cache::behavior_e b,
-          const std::string& confirmation = std::string() );
+int get( std::string& result, const std::string& url,
+          cache::behavior_e caching, const std::string& confirmation = "",
+          const std::vector<std::string>& headers = {} );
 }
 
 // XML ======================================================================

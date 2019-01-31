@@ -84,22 +84,6 @@ namespace warlock
     };
   } // end actions namespace
 
-  namespace buffs
-  {
-    struct debuff_havoc_t : public warlock_buff_t<buff_t>
-    {
-      debuff_havoc_t( warlock_td_t& p ) :
-        base_t( p, "havoc", p.source -> find_spell( 80240 ) ) { }
-
-      void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
-      {
-        base_t::expire_override( expiration_stacks, remaining_duration );
-
-        p()->havoc_target = nullptr;
-      }
-    };
-  }
-
   warlock_td_t::warlock_td_t( player_t* target, warlock_t& p ) :
     actor_target_data_t( target, &p ),
     soc_threshold( 0.0 ),
@@ -124,7 +108,6 @@ namespace warlock
     debuffs_shadow_embrace = make_buff( *this, "shadow_embrace", source->find_spell( 32390 ) )
       ->set_refresh_behavior( buff_refresh_behavior::DURATION )
       ->set_max_stack( 3 );
-    debuffs_tormented_agony = make_buff(*this, "tormented_agony", source->find_spell(252938));
 
     //Destro
     dots_immolate = target->get_dot("immolate", &p);
@@ -136,7 +119,16 @@ namespace warlock
     debuffs_roaring_blaze = make_buff( *this, "roaring_blaze", source->find_spell( 205690 ) )
       ->set_max_stack( 100 );
     debuffs_shadowburn = make_buff(*this, "shadowburn", source->find_spell(17877));
-    debuffs_havoc = new buffs::debuff_havoc_t(*this);
+    debuffs_havoc = make_buff( *this, "havoc", source->find_spell( 80240 ) )
+      ->set_stack_change_callback( [ &p ] ( buff_t* b, int, int cur )
+      {
+        if ( cur == 0 )
+          p.havoc_target = nullptr;
+        else
+          p.havoc_target = b->player;
+
+        range::for_each( p.havoc_spells, [] ( action_t* a ) { a->target_cache.is_valid = false; } );
+      } );
     debuffs_chaotic_flames = make_buff(*this, "chaotic_flames", source->find_spell(253092));
 
     //Demo
@@ -197,6 +189,7 @@ namespace warlock
 warlock_t::warlock_t( sim_t* sim, const std::string& name, race_e r ):
   player_t( sim, WARLOCK, name, r ),
     havoc_target( nullptr ),
+    havoc_spells(),
     wracking_brilliance(false),
     agony_accumulator( 0.0 ),
     active_pets( 0 ),
@@ -313,20 +306,11 @@ double warlock_t::composite_spell_haste() const
 {
   double h = player_t::composite_spell_haste();
 
-  if ( buffs.demonic_speed->check() )
-    h *= 1.0 / ( 1.0 + buffs.demonic_speed->check_value() );
-
   if (buffs.dark_soul_misery->check())
     h *= 1.0 / (1.0 + buffs.dark_soul_misery->check_value());
 
   if (buffs.reverse_entropy->check())
     h *= 1.0 / (1.0 + buffs.reverse_entropy->check_value());
-
-  if (specialization() == WARLOCK_DEMONOLOGY)
-  {
-    if (buffs.dreaded_haste->check())
-      h *= 1.0 / (1.0 + buffs.dreaded_haste->check_value());
-  }
 
   return h;
 }
@@ -335,17 +319,8 @@ double warlock_t::composite_melee_haste() const
 {
   double h = player_t::composite_melee_haste();
 
-  if ( buffs.demonic_speed->check() )
-    h *= 1.0 / ( 1.0 + buffs.demonic_speed->check_value() );
-
   if (buffs.reverse_entropy->check())
     h *= 1.0 / (1.0 + buffs.reverse_entropy->check_value());
-
-  if (specialization() == WARLOCK_DEMONOLOGY)
-  {
-    if (buffs.dreaded_haste->check())
-      h *= 1.0 / (1.0 + buffs.dreaded_haste->check_value());
-  }
 
   return h;
 }
@@ -593,7 +568,6 @@ void warlock_t::init_procs()
   procs.portal_summon                   = get_proc( "portal_summon" );
   procs.demonic_calling                 = get_proc( "demonic_calling" );
   procs.soul_conduit                    = get_proc( "soul_conduit" );
-  procs.demonology_t20_2pc              = get_proc( "demonology_t20_2pc" );
 }
 
 void warlock_t::init_base_stats()
@@ -939,6 +913,20 @@ expr_t* warlock_t::create_expression( const std::string& name_str )
   }
   else if (name_str == "deathbolt_setup") {
     return create_aff_expression(name_str);
+  }
+  // TODO: Remove the deprecated buff expressions once the APL is adjusted for
+  // havoc_active/havoc_remains.
+  else if ( name_str == "havoc_active" || name_str == "buff.active_havoc.up" ) {
+    return make_fn_expr( name_str, [ this ]
+    {
+      return havoc_target != nullptr;
+    } );
+  }
+  else if ( name_str == "havoc_remains" || name_str == "buff.active_havoc.remains" ) {
+    return make_fn_expr( name_str, [ this ]
+    {
+      return havoc_target ? get_target_data( havoc_target )->debuffs_havoc->remains().total_seconds() : 0.0;
+    } );
   }
 
   return player_t::create_expression( name_str );

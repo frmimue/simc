@@ -979,6 +979,16 @@ void buff_t::datacollection_begin()
 
 void buff_t::datacollection_end()
 {
+  // Debuffs need to ensure that the source is active (when single_actor_batch=1) to ensure that
+  // reporting stays correct.
+  if ( sim->single_actor_batch && source != player )
+  {
+    if ( !source->is_enemy() && source != sim->player_no_pet_list[ sim->current_index ] )
+    {
+      return;
+    }
+  }
+
   timespan_t time = player ? player->iteration_fight_length : sim->current_time();
 
   uptime_pct.add( time != timespan_t::zero() ? 100.0 * iteration_uptime_sum / time : 0 );
@@ -1001,10 +1011,6 @@ void buff_t::datacollection_end()
   avg_expire.add( expire_count );
   avg_overflow_count.add( overflow_count );
   avg_overflow_total.add( overflow_total );
-}
-
-void buff_t::init()
-{
 }
 
 timespan_t buff_t::refresh_duration( const timespan_t& new_duration ) const
@@ -2216,6 +2222,8 @@ void stat_buff_t::decrement( int stacks, double /* value */ )
   }
   else
   {
+    int old_stack = current_stack;
+
     if ( as<std::size_t>( current_stack ) < stack_uptime.size() )
       stack_uptime[ current_stack ].update( false, sim->current_time() );
 
@@ -2242,6 +2250,11 @@ void stat_buff_t::decrement( int stacks, double /* value */ )
       stack_uptime[ current_stack ].update( true, sim->current_time() );
 
     sim->print_debug( "{} decremented by {} to {} stacks.", *this, stacks, current_stack );
+
+    if ( old_stack != current_stack && stack_change_callback )
+    {
+      stack_change_callback( this, old_stack, current_stack );
+    }
 
     if ( player )
       player->trigger_ready();

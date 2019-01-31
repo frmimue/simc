@@ -94,16 +94,6 @@ struct holy_power_consumer_t : public paladin_melee_attack_t
     double c = cost();
     paladin_melee_attack_t::execute();
 
-    bool dp_success = false;
-
-    // Bug: Divine Purpose procs are instantly consumed when proccing off themselves
-    // https://github.com/SimCMinMax/WoW-BugTracker/issues/359
-    // First, check if dp proc was successful
-    if ( p() -> talents.divine_purpose -> ok() )
-    {
-      dp_success = rng().roll( p() -> spells.divine_purpose_ret -> effectN( 1 ).percent() );
-    }
-
     if ( c <= 0.0 )
     {
       if ( !skip_dp )
@@ -120,8 +110,8 @@ struct holy_power_consumer_t : public paladin_melee_attack_t
         p() -> buffs.the_fires_of_justice -> expire();
     }
 
-    // If the dp proc was successful, but DP wasn't active or bugs were disabled, activate DP.
-    if ( dp_success )
+    if ( p() -> talents.divine_purpose -> ok() &&
+         rng().roll( p() -> spells.divine_purpose_ret -> effectN( 1 ).percent() ) )
     {
       p() -> buffs.divine_purpose -> trigger();
       p() -> procs.divine_purpose -> occur();
@@ -143,11 +133,9 @@ struct holy_power_consumer_t : public paladin_melee_attack_t
     {
       if ( p() -> buffs.avenging_wrath -> up() || p() -> buffs.crusade -> up() )
       {
-        if ( c > 0 ) {
-          // TODO(mserrano): this is a hack - do we need this?
-          lights_decree -> set_target( p() -> target );
-          lights_decree -> execute();
-        }
+        // TODO(mserrano): this is a hack - do we need this?
+        lights_decree -> set_target( p() -> target );
+        lights_decree -> execute();
       }
     }
   }
@@ -170,27 +158,9 @@ struct holy_power_consumer_t : public paladin_melee_attack_t
     int discounts = 0;
     if ( p() -> buffs.the_fires_of_justice -> up() && base_cost > discounts )
       discounts++;
-    if ( p() -> buffs.ret_t21_4p -> up() && base_cost > discounts )
-      discounts++;
     return base_cost - discounts;
   }
 };
-
-void holy_power_generator_t::execute()
-{
-  paladin_melee_attack_t::execute();
-
-  if ( p() -> sets -> has_set_bonus( PALADIN_RETRIBUTION, T19, B4 ) )
-  {
-    // for some reason this is the same spell as the talent
-    // leftover nonsense from when this was Conviction?
-    if ( p() -> rng().roll( p() -> sets -> set( PALADIN_RETRIBUTION, T19, B4 ) -> proc_chance() ) )
-    {
-      p() -> resource_gain( RESOURCE_HOLY_POWER, 1, p() -> gains.hp_t19_4p );
-      p() -> procs.tfoj_set_bonus -> occur();
-    }
-  }
-}
 
 // Crusade
 struct crusade_t : public paladin_heal_t
@@ -224,7 +194,7 @@ struct crusade_t : public paladin_heal_t
     p() -> buffs.crusade -> trigger();
 
     if ( p() -> azerite.avengers_might.ok() )
-      p() -> buffs.avengers_might -> trigger();
+      p() -> buffs.avengers_might -> trigger( 1, p() -> buffs.avengers_might -> default_value, -1.0, p() -> buffs.crusade -> buff_duration );
   }
 
   bool ready() override
@@ -251,10 +221,6 @@ struct execution_sentence_t : public holy_power_consumer_t
 
     // Spelldata doesn't seem to have this
     hasted_gcd = true;
-    if ( p -> sets -> has_set_bonus( PALADIN_RETRIBUTION, T19, B2 ) )
-    {
-      base_multiplier *= 1.0 + p -> sets -> set( PALADIN_RETRIBUTION, T19, B2 ) -> effectN( 2 ).percent();
-    }
   }
 
   virtual void impact( action_state_t* s) override
@@ -298,9 +264,6 @@ struct blade_of_justice_t : public holy_power_generator_t
   virtual double action_multiplier() const override
   {
     double am = holy_power_generator_t::action_multiplier();
-    if ( p() -> sets -> has_set_bonus( PALADIN_RETRIBUTION, T20, B2 ) )
-      if ( p() -> buffs.sacred_judgment -> up() )
-        am *= 1.0 + p() -> buffs.sacred_judgment -> data().effectN( 1 ).percent();
     if ( p() -> buffs.blade_of_wrath -> up() )
       am *= 1.0 + p() -> buffs.blade_of_wrath -> data().effectN( 1 ).percent();
     return am;
@@ -309,8 +272,6 @@ struct blade_of_justice_t : public holy_power_generator_t
   virtual void execute() override
   {
     holy_power_generator_t::execute();
-    if ( p() -> sets -> has_set_bonus( PALADIN_RETRIBUTION, T20, B4 ) )
-      p() -> resource_gain( RESOURCE_HOLY_POWER, 1, p() -> gains.hp_t20_2p );
     if ( p() -> buffs.blade_of_wrath -> up() )
       p() -> buffs.blade_of_wrath -> expire();
   }
@@ -336,11 +297,6 @@ struct holy_power_consumer_impact_t : public paladin_melee_attack_t
     : paladin_melee_attack_t( n, p, s ) {
     dual = background = true;
     may_miss = may_dodge = may_parry = false;
-
-    if ( p -> sets -> has_set_bonus( PALADIN_RETRIBUTION, T19, B2 ) )
-    {
-      base_multiplier *= 1.0 + p -> sets -> set( PALADIN_RETRIBUTION, T19, B2 ) -> effectN( 1 ).percent();
-    }
   }
 
   virtual double action_multiplier() const override
@@ -413,8 +369,6 @@ struct divine_storm_t: public holy_power_consumer_t
     skip_dp = false;
     if ( p() -> buffs.the_fires_of_justice -> up() && c > 0 )
       p() -> buffs.the_fires_of_justice -> expire();
-    if ( p() -> buffs.ret_t21_4p -> up() && c > 0 )
-      p() -> buffs.ret_t21_4p -> expire();
     if ( p() -> buffs.empyrean_power -> up() )
       p() -> buffs.empyrean_power -> expire();
   }
@@ -487,8 +441,6 @@ struct templars_verdict_t : public holy_power_consumer_t
     // TODO: do misses consume fires of justice?
     if ( p() -> buffs.the_fires_of_justice -> up() && c > 0 )
       p() -> buffs.the_fires_of_justice -> expire();
-    if ( p() -> buffs.ret_t21_4p -> up() && c > 0 )
-      p() -> buffs.ret_t21_4p -> expire();
 
     // missed/dodged/parried TVs do not consume Holy Power
     // check for a miss, and refund the appropriate amount of HP if we spent any
@@ -512,11 +464,7 @@ struct judgment_ret_t : public judgment_t
 {
   judgment_ret_t( paladin_t* p, const std::string& options_str )
     : judgment_t( p, options_str )
-  {
-    // TODO: this is a hack; figure out what's really going on here.
-    if ( p -> sets -> has_set_bonus( PALADIN_RETRIBUTION, T21, B2 ) )
-      base_multiplier *= 1.0 + p -> sets -> set( PALADIN_RETRIBUTION, T21, B2 ) -> effectN( 1 ).percent();
-  }
+  {}
 
   virtual void execute() override
   {
@@ -530,10 +478,6 @@ struct judgment_ret_t : public judgment_t
     {
       p() -> buffs.divine_judgment -> expire();
     }
-    if ( p() -> sets -> has_set_bonus( PALADIN_RETRIBUTION, T20, B2 ) )
-      p() -> buffs.sacred_judgment -> trigger();
-    if ( p() -> sets -> has_set_bonus( PALADIN_RETRIBUTION, T21, B4 ) )
-      p() -> buffs.ret_t21_4p -> trigger();
   }
 
   virtual double action_multiplier() const override
@@ -582,9 +526,6 @@ struct justicars_vengeance_t : public holy_power_consumer_t
     // TODO: do misses consume fires of justice?
     if ( p() -> buffs.the_fires_of_justice -> up() && c > 0 )
       p() -> buffs.the_fires_of_justice -> expire();
-
-    if ( p() -> buffs.ret_t21_4p -> up() && c > 0 )
-      p() -> buffs.ret_t21_4p -> expire();
 
     // missed/dodged/parried TVs do not consume Holy Power
     // check for a miss, and refund the appropriate amount of HP if we spent any
@@ -666,6 +607,17 @@ struct wake_of_ashes_t : public paladin_spell_t
     hasted_gcd = true;
     may_crit = true;
     aoe = -1;
+  }
+
+  timespan_t gcd() const override
+  {
+    timespan_t t = paladin_spell_t::gcd();
+    // Wake of Ashes' gcd is affected by haste twice
+    if ( p() -> bugs )
+    {
+      t *= this -> composite_haste();
+    }
+    return t;
   }
 };
 
@@ -776,15 +728,9 @@ void paladin_t::create_buffs_retribution()
   buffs.the_fires_of_justice           = make_buff( this, "fires_of_justice", find_spell( 209785 ) );
   buffs.blade_of_wrath                 = make_buff( this, "blade_of_wrath", find_spell( 281178 ) );
   buffs.shield_of_vengeance            = new buffs::shield_of_vengeance_buff_t( this );
-  buffs.sacred_judgment                = make_buff( this, "sacred_judgment", find_spell( 246973 ) );
   buffs.divine_judgment                = make_buff( this, "divine_judgment", find_spell( 271581 ) );
 
-  // Tier Bonuses
-  buffs.ret_t21_4p             = make_buff( this, "hidden_retribution_t21_4p", find_spell( 253806 ) );
-
   // Azerite
-  buffs.avengers_might = make_buff<stat_buff_t>(this, "avengers_might", find_spell( 272903 ))
-                            -> add_stat( STAT_MASTERY_RATING, azerite.avengers_might.value() );
   buffs.relentless_inquisitor = make_buff<stat_buff_t>(this, "relentless_inquisitor", find_spell( 279204 ))
                                   -> add_stat( STAT_HASTE_RATING, azerite.relentless_inquisitor.value() );
   buffs.empyrean_power = make_buff( this, "empyrean_power", find_spell( 286393 ))
@@ -921,11 +867,18 @@ void paladin_t::generate_action_prio_list_ret()
   def -> add_action( "call_action_list,name=generators" );
 
   // Items
+  bool has_knot = false;
   int num_items = ( int ) items.size();
   for ( int i = 0; i < num_items; i++ )
   {
     if ( items[i].has_special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE ) )
     {
+      if ( items[i].name_str == "knot_of_ancient_fury" )
+      {
+        has_knot = true;
+        continue;
+      }
+
       std::string item_str;
       if ( items[i].name_str == "razdunks_big_red_button" )
       {
@@ -987,6 +940,10 @@ void paladin_t::generate_action_prio_list_ret()
       {
         item_str = "use_item,name=" + items[i].name_str + ",if=buff.avenging_wrath.up|buff.crusade.up&buff.crusade.remains<=20";
       }
+      else if ( items[i].name_str == "grongs_primal_rage" )
+      {
+        item_str = "use_item,name=" + items[i].name_str + ",if=!buff.avenging_wrath.up&!buff.crusade.up";
+      }
       else if ( items[i].slot != SLOT_WAIST )
       {
         item_str = "use_item,name=" + items[i].name_str + ",if=(buff.avenging_wrath.up|buff.crusade.up)";
@@ -999,12 +956,17 @@ void paladin_t::generate_action_prio_list_ret()
     }
   }
 
+  if ( has_knot )
+  {
+    cds -> add_action( "use_item,name=knot_of_ancient_fury,if=buff.avenging_wrath.up|buff.crusade.up&buff.crusade.stack>=10|cooldown.avenging_wrath.remains>30|!buff.crusade.up&cooldown.crusade.remains>30" );
+  }
+
   if ( sim -> allow_potions )
   {
     if ( true_level > 100 )
-      cds -> add_action( "potion,if=(buff.bloodlust.react|buff.avenging_wrath.up|buff.crusade.up&buff.crusade.remains<25|target.time_to_die<=40)" );
+      cds -> add_action( "potion,if=buff.bloodlust.react|buff.avenging_wrath.up|buff.crusade.up&buff.crusade.remains<25" );
     else if ( true_level >= 80 )
-      cds -> add_action( "potion,if=(buff.bloodlust.react|buff.avenging_wrath.up|target.time_to_die<=40)" );
+      cds -> add_action( "potion,if=buff.bloodlust.react|buff.avenging_wrath.up" );
   }
 
   std::vector<std::string> racial_actions = get_racial_actions();
@@ -1039,7 +1001,7 @@ void paladin_t::generate_action_prio_list_ret()
   opener -> add_action( "sequence,if=talent.wake_of_ashes.enabled&talent.crusade.enabled&!talent.execution_sentence.enabled&talent.hammer_of_wrath.enabled,name=wake_opener_HoW:shield_of_vengeance:blade_of_justice:judgment:crusade:templars_verdict:wake_of_ashes:templars_verdict:hammer_of_wrath:templars_verdict" );
   opener -> add_action( "sequence,if=talent.wake_of_ashes.enabled&talent.inquisition.enabled,name=wake_opener_Inq:shield_of_vengeance:blade_of_justice:judgment:inquisition:avenging_wrath:wake_of_ashes" );
 
-  finishers -> add_action( "variable,name=ds_castable,value=spell_targets.divine_storm>=2" );
+  finishers -> add_action( "variable,name=ds_castable,value=spell_targets.divine_storm>=2&!talent.righteous_verdict.enabled|spell_targets.divine_storm>=3&talent.righteous_verdict.enabled" );
   finishers -> add_talent( this, "Inquisition", "if=buff.inquisition.down|buff.inquisition.remains<5&holy_power>=3|talent.execution_sentence.enabled&cooldown.execution_sentence.remains<10&buff.inquisition.remains<15|cooldown.avenging_wrath.remains<15&buff.inquisition.remains<20&holy_power>=3" );
   finishers -> add_talent( this, "Execution Sentence", "if=spell_targets.divine_storm<=2&(!talent.crusade.enabled|cooldown.crusade.remains>gcd*2)" );
   finishers -> add_action( this, "Divine Storm", "if=variable.ds_castable&buff.divine_purpose.react" );

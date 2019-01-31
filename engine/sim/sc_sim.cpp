@@ -344,7 +344,10 @@ class names_and_options_t
 {
 private:
   static bool is_valid_region( const std::string& s )
-  { return s.size() == 2; }
+  {
+    static const std::vector<std::string> REGIONS { "us", "eu", "kr", "tw", "cn" };
+    return s.size() == 2 && range::find( REGIONS, s ) != REGIONS.end();
+  }
 
 public:
   typedef std::runtime_error error;
@@ -401,6 +404,8 @@ public:
       if ( names.size() > 2 )
       {
         region = names[ 0 ];
+        // Lowercase regions, always
+        std::transform( region.begin(), region.end(), region.begin(), tolower );
         server = names[ 1 ];
         names.erase( names.begin(), names.begin() + 2 );
       }
@@ -411,7 +416,8 @@ public:
     }
     if (!is_valid_region( region ))
     {
-      throw std::invalid_argument(fmt::format("Invalid region '{}'.", region));
+      throw std::invalid_argument(
+          fmt::format( "Invalid region '{}', available regions are: us, eu, kr, tw, cn.", region ) );
     }
 
     if ( server.empty() )
@@ -1017,6 +1023,7 @@ struct regen_event_t : public event_t
   }
 };
 
+#ifndef SC_NO_NETWORKING
 /// List of files from which to look for Blizzard API key
 std::vector<std::string> get_api_key_locations()
 {
@@ -1050,7 +1057,7 @@ std::vector<std::string> get_api_key_locations()
 bool validate_api_key( const std::string& key )
 {
   // no better check for now than to measure its length.
-  return key.size() == 32;
+  return key.size() == 65;
 }
 
 /**
@@ -1083,15 +1090,16 @@ std::string get_api_key()
     }
     else
     {
-      std::cerr << "Blizzard API Key from file '" << filename << "' was not properly entered. (Size != 32)" << std::endl;
+      std::cerr << "Blizzard API credentials from file '" << filename << "' were not properly entered. (Size != 65)" << std::endl;
     }
   }
 
-#if defined(SC_DEFAULT_APIKEY)
+#if defined( SC_DEFAULT_APIKEY )
   return std::string(SC_DEFAULT_APIKEY);
-#endif
+#endif /* SC_DEFAULT_APIKEY */
   return std::string();
 }
+#endif /* SC_NO_NETWORKING */
 
 /// Setup a periodic check for Bloodlust
 struct bloodlust_check_t : public event_t
@@ -1393,7 +1401,9 @@ sim_t::sim_t() :
   solo_raid( false ),
   global_item_upgrade_level( 0 ),
   maximize_reporting( false ),
+#ifndef SC_NO_NETWORKING
   apikey( get_api_key() ),
+#endif
   distance_targeting_enabled( false ),
   ignore_invulnerable_targets( false ),
   enable_dps_healing( false ),
@@ -2636,7 +2646,12 @@ void sim_t::init()
     }
   }
 
-  profilesets.initialize( this );
+  // If save= option is used, don't bother initializing profilesets as the main thread is going to
+  // exit in any case
+  if ( active_player && active_player->report_information.save_str.empty() )
+  {
+    profilesets.initialize( this );
+  }
 
   initialized = true;
 
@@ -3478,6 +3493,7 @@ void sim_t::create_options()
   add_option( opt_bool( "monitor_cpu", event_mgr.monitor_cpu ) );
   add_option( opt_func( "maximize_reporting", parse_maximize_reporting ) );
   add_option( opt_string( "apikey", apikey ) );
+  add_option( opt_string( "apitoken", user_apitoken ) );
   add_option( opt_bool( "distance_targeting_enabled", distance_targeting_enabled ) );
   add_option( opt_bool( "ignore_invulnerable_targets", ignore_invulnerable_targets ) );
   add_option( opt_bool( "enable_dps_healing", enable_dps_healing ) );
@@ -3557,7 +3573,22 @@ void sim_t::create_options()
         bfa_opts.reorigination_array_stacks, 0, 10 ) );
   add_option( opt_bool( "bfa.reorigination_array_ignore_scale_factors",
         bfa_opts.reorigination_array_ignore_scale_factors ) );
-
+  add_option( opt_float( "bfa.seductive_power_pickup_chance",
+        bfa_opts.seductive_power_pickup_chance, 0.0, 1.0 ) );
+  add_option( opt_int( "bfa.initial_seductive_power_stacks",
+        bfa_opts.initial_seductive_power_stacks, 0, 5 ) );
+  add_option( opt_bool( "bfa.randomize_oscillation",
+        bfa_opts.randomize_oscillation ) );
+  add_option( opt_bool( "bfa.auto_oscillating_overload",
+        bfa_opts.auto_oscillating_overload ) );
+  add_option( opt_bool( "bfa.zuldazar",
+        bfa_opts.zuldazar ) );
+  add_option( opt_timespan( "bfa.covenant_period",
+        bfa_opts.covenant_period, 1_ms, timespan_t::max() ) );
+  add_option( opt_float( "bfa.covenant_chance",
+        bfa_opts.covenant_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.incandescent_sliver_chance",
+        bfa_opts.incandescent_sliver_chance, 0.0, 1.0 ) );
 
   // applies to: "lavish_suramar_feast", battle for azeroth feasts
   add_option( opt_bool( "feast_as_dps", feast_as_dps ) );

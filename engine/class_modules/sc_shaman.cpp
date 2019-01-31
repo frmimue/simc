@@ -288,6 +288,7 @@ public:
     spell_t* searing_assault;
     spell_t* molten_weapon;
     action_t* molten_weapon_dot;
+    action_t* fury_of_air;
 
     // Azerite
     spell_t* lightning_conduit;
@@ -348,6 +349,7 @@ public:
     buff_t* feral_spirit;
     buff_t* flametongue;
     buff_t* frostbrand;
+    buff_t* fury_of_air;
     buff_t* hot_hand;
     buff_t* lightning_shield;
     buff_t* lightning_shield_overcharge;
@@ -409,6 +411,7 @@ public:
     gain_t* resurgence;
     gain_t* feral_spirit;
     gain_t* fire_elemental;
+    gain_t* fury_of_air;
     gain_t* spirit_of_the_maelstrom;
     gain_t* resonance_totem;
     gain_t* forceful_winds;
@@ -1425,7 +1428,7 @@ public:
 
     if ( p()->azerite.thunderaans_fury.ok() )
     {
-      tf_proc_chance = p()->find_spell( 287801 )->effectN( 1 ).percent();
+      tf_proc_chance = p()->find_spell( 287801 )->proc_chance();
     }
   }
 
@@ -2450,6 +2453,23 @@ struct ember_elemental_t : public primal_elemental_t
     {
       return true;
     }
+
+    timespan_t execute_time() const override
+    {
+      timespan_t t = pet_spell_t<ember_elemental_t>::execute_time();
+
+      // server seems to tick every 2.4something seconds and allows pets to start actions at that moment
+      // see syncing up casts here:
+      // https://cdn.discordapp.com/attachments/271021613938376704/539995302090768395/unknown.png
+      timespan_t server_tick = timespan_t::from_seconds( 2.416f );
+
+      if ( t < server_tick )
+      {
+        return server_tick;
+      }
+
+      return t;
+    }
   };
 
   void create_default_apl() override
@@ -2631,6 +2651,23 @@ struct spark_elemental_t : public primal_elemental_t
     bool usable_moving() const override
     {
       return true;
+    }
+
+    timespan_t execute_time() const override
+    {
+      timespan_t t = pet_spell_t<spark_elemental_t>::execute_time();
+
+      // server seems to tick every 2.4something seconds and allows pets to start actions at that moment
+      // see syncing up casts here:
+      // https://cdn.discordapp.com/attachments/271021613938376704/539995302090768395/unknown.png
+      timespan_t server_tick = timespan_t::from_seconds( 2.416f );
+
+      if ( t < server_tick )
+      {
+        return server_tick;
+      }
+
+      return t;
     }
   };
 
@@ -4114,15 +4151,68 @@ struct fury_of_air_t : public shaman_spell_t
   fury_of_air_t( shaman_t* player, const std::string& options_str )
     : shaman_spell_t( "fury_of_air", player, player->talent.fury_of_air, options_str )
   {
-    hasted_ticks = callbacks = false;
+    callbacks = false;
 
-    tick_action = new fury_of_air_aoe_t( player );
+    // Handled by the buff
+    base_tick_time = timespan_t::zero();
+
+    if ( player->action.fury_of_air )
+    {
+      add_child( player->action.fury_of_air );
+    }
   }
 
-  // Infinite duration, so lets go for twice expected time gimmick.
-  timespan_t composite_dot_duration( const action_state_t* ) const override
+  void init() override
   {
-    return sim->expected_iteration_time * 2;
+    shaman_spell_t::init();
+
+    // Set up correct gain object to collect resource spending information on the ticking buff
+    p()->gain.fury_of_air = &( stats->resource_gain );
+  }
+
+  timespan_t gcd() const override
+  {
+    // Disabling Fury of Air does not incur a global cooldown
+    if ( p()->buff.fury_of_air->check() )
+    {
+      return timespan_t::zero();
+    }
+
+    return shaman_spell_t::gcd();
+  }
+
+  double cost() const override
+  {
+    // Disabling Fury of Air costs an amount of maelstrom relative to the elapsed tick time of the
+    // on-going tick .. probably
+    if ( p()->buff.fury_of_air->check() )
+    {
+      return base_costs[ RESOURCE_MAELSTROM ] *
+             ( 1 - p()->buff.fury_of_air->tick_event->remains() / data().effectN( 1 ).period() );
+    }
+
+    return shaman_spell_t::cost();
+  }
+
+  void execute() override
+  {
+    // Don't record disables by setting dual = true before executing
+    if ( p()->buff.fury_of_air->check() )
+    {
+      dual = true;
+    }
+
+    shaman_spell_t::execute();
+
+    if ( p()->buff.fury_of_air->check() )
+    {
+      p()->buff.fury_of_air->expire();
+      dual = false;
+    }
+    else
+    {
+      p()->buff.fury_of_air->trigger();
+    }
   }
 };
 
@@ -4477,13 +4567,13 @@ struct lava_burst_overload_t : public elemental_overload_spell_t
     snapshot_internal( s, impact_flags, rt );
   }
 
-  virtual double calculate_direct_amount( action_state_t* s ) const override
+  double calculate_direct_amount( action_state_t* /* s */ ) const override
   {
     // Don't do any extra work, this result won't be used.
     return 0.0;
   }
 
-  result_e calculate_result( action_state_t* s ) const override
+  result_e calculate_result( action_state_t* /* s */ ) const override
   {
     // Don't do any extra work, this result won't be used.
     return RESULT_NONE;
@@ -4709,13 +4799,13 @@ struct lava_burst_t : public shaman_spell_t
     snapshot_internal( s, impact_flags, rt );
   }
 
-  virtual double calculate_direct_amount( action_state_t* s ) const override
+  double calculate_direct_amount( action_state_t* /* s */ ) const override
   {
     // Don't do any extra work, this result won't be used.
     return 0.0;
   }
 
-  result_e calculate_result( action_state_t* s ) const override
+  result_e calculate_result( action_state_t* /* s */ ) const override
   {
     // Don't do any extra work, this result won't be used.
     return RESULT_NONE;
@@ -6817,6 +6907,10 @@ void shaman_t::create_actions()
     action.searing_assault = new searing_assault_t( this );
   }
 
+  // Always create the Fury of Air damage action so spell_targets.fury_of_air works with or without
+  // the talent
+  action.fury_of_air = new fury_of_air_aoe_t( this );
+
   player_t::create_actions();
 }
 
@@ -7251,7 +7345,10 @@ void shaman_t::trigger_windfury_weapon( const action_state_t* state )
 
   double proc_chance = spec.windfury->proc_chance();
   proc_chance += cache.mastery() * mastery.enhanced_elements->effectN( 4 ).mastery_value();
-  proc_chance *= 1.0 + buff.tailwind_totem_enh->value();
+  if ( buff.tailwind_totem_enh )
+  {
+    proc_chance *= 1.0 + buff.tailwind_totem_enh->value();
+  }
 
   if ( buff.thunderaans_fury->up() )
   {
@@ -7431,7 +7528,10 @@ void shaman_t::create_buffs()
   //
   // Elemental
   //
-  buff.tailwind_totem_ele   = new tailwind_totem_buff_ele_t( this );
+  if ( specialization() == SHAMAN_ELEMENTAL )
+  {
+    buff.tailwind_totem_ele = new tailwind_totem_buff_ele_t( this );
+  }
   buff.elemental_blast_crit = make_buff<stat_buff_t>( this, "elemental_blast_critical_strike", find_spell( 118522 ) );
   buff.elemental_blast_crit->set_max_stack( 1 );
   buff.elemental_blast_haste = make_buff<stat_buff_t>( this, "elemental_blast_haste", find_spell( 173183 ) );
@@ -7512,7 +7612,10 @@ void shaman_t::create_buffs()
   //
   // Enhancement
   //
-  buff.tailwind_totem_enh          = new tailwind_totem_buff_enh_t( this );
+  if ( specialization() == SHAMAN_ENHANCEMENT )
+  {
+    buff.tailwind_totem_enh = new tailwind_totem_buff_enh_t( this );
+  }
   buff.lightning_shield            = new lightning_shield_buff_t( this );
   buff.lightning_shield_overcharge = new lightning_shield_overcharge_buff_t( this );
   buff.flametongue                 = new flametongue_buff_t( this );
@@ -7539,6 +7642,26 @@ void shaman_t::create_buffs()
   buff.stormbringer = make_buff( this, "stormbringer", find_spell( 201846 ) )
                           ->set_activated( false )
                           ->set_max_stack( find_spell( 201846 )->initial_stacks() );
+  buff.fury_of_air = make_buff( this, "fury_of_air", talent.fury_of_air )
+                         ->set_tick_callback( [this]( buff_t* b, int, const timespan_t& ) {
+                           action.fury_of_air->set_target( target );
+                           action.fury_of_air->execute();
+
+                           double actual_amount =
+                               resource_loss( RESOURCE_MAELSTROM, talent.fury_of_air->powerN( 1 ).cost() );
+                           gain.fury_of_air->add( RESOURCE_MAELSTROM, actual_amount );
+
+                           // If the actor reaches 0 maelstrom after the tick cost, cancel the buff. Otherwise, keep
+                           // going. This allows "one extra tick" with less than 3 maelstrom, which seems to mirror in
+                           // game behavior. In game, the buff only fades after the next tick (i.e., it has a one second
+                           // delay), but modeling that seems pointless. Gaining maelstrom during that delay will not
+                           // change the outcome of the fading.
+                           if ( resources.current[ RESOURCE_MAELSTROM ] == 0 )
+                           {
+                             // Separate the expiration event to happen immediately after tick processing
+                             make_event( *sim, timespan_t::zero(), [b]() { b->expire(); } );
+                           }
+                         } );
 
   //
   // Restoration
@@ -7564,6 +7687,7 @@ void shaman_t::init_gains()
   gain.resonance_totem             = get_gain( "Resonance Totem" );
   gain.lightning_shield_overcharge = get_gain( "Lightning Shield Overcharge" );
   gain.forceful_winds              = get_gain( "Forceful Winds" );
+  // Note, Fury of Air gain pointer is initialized in the base action
 }
 
 // shaman_t::init_procs =====================================================
@@ -7733,8 +7857,9 @@ void shaman_t::init_action_list_elemental()
   precombat->add_action( this, "Fire Elemental", "if=!talent.storm_elemental.enabled" );
   precombat->add_talent( this, "Storm Elemental", "if=talent.storm_elemental.enabled" );
   precombat->add_action( "potion" );
-  precombat->add_talent( this, "Elemental Blast", "if=talent.elemental_blast.enabled" );
-  precombat->add_action( this, "Lava Burst", "if=!talent.elemental_blast.enabled" );
+  precombat->add_talent( this, "Elemental Blast", "if=talent.elemental_blast.enabled&spell_targets.chain_lightning<3" );
+  precombat->add_action( this, "Lava Burst", "if=!talent.elemental_blast.enabled&spell_targets.chain_lightning<3" );
+  precombat->add_action( this, "Chain Lightning", "if=spell_targets.chain_lightning>2" );
 
   // All Shamans Bloodlust by default
   def->add_action( this, "Bloodlust", "if=azerite.ancestral_resonance.enabled",
@@ -7771,25 +7896,32 @@ void shaman_t::init_action_list_elemental()
   def->add_action( "run_action_list,name=single_target" );
 
   // Aoe APL
-  aoe->add_action( this, "Stormkeeper", "if=talent.stormkeeper.enabled" );
+  aoe->add_talent( this, "Stormkeeper", "if=talent.stormkeeper.enabled" );
+  aoe->add_action( this, "Flame Shock",
+                   "target_if=refreshable&(spell_targets.chain_lightning<(5-!talent.totem_mastery.enabled)|!talent."
+                   "storm_elemental.enabled&(cooldown.fire_elemental.remains>(120+14*spell_haste)|cooldown.fire_"
+                   "elemental.remains<(24-14*spell_haste)))&(!talent.storm_elemental.enabled|cooldown.storm_elemental."
+                   "remains<120|spell_targets.chain_lightning=3&buff.wind_gust.stack<14)",
+                   "Spread Flame Shock in <= 4 target fights, but not during SE uptime,"
+                   "unless you're fighting 3 targets and have less than 14 Wind Gust stacks." );
   aoe->add_talent( this, "Ascendance",
                    "if=talent.ascendance.enabled&(talent.storm_elemental.enabled&cooldown.storm_elemental.remains<120&"
-                   "cooldown.storm_elemental.remains>15|!talent.storm_elemental.enabled)" );
+                   "cooldown.storm_elemental.remains>15|!talent.storm_elemental.enabled)&(!talent.icefury.enabled|!"
+                   "buff.icefury.up&!cooldown.icefury.up)" );
   aoe->add_talent( this, "Liquid Magma Totem", "if=talent.liquid_magma_totem.enabled" );
-  aoe->add_action( this, "Flame Shock",
-                   "target_if=refreshable&spell_targets.chain_lightning<5&(!talent.storm_elemental.enabled|cooldown."
-                   "storm_elemental.remains<120|spell_targets.chain_lightning=3&buff.wind_gust.stack<14)",
-                   "Spread Flame Shock in <=4 target fights, but not during SE uptime, unless you're fighting 3 "
-                   "targets and have less than 14 Wind Gust stacks." );
   aoe->add_action(
       this, "Earthquake",
-      "if=!talent.master_of_the_elements.enabled|buff.stormkeeper.up|maelstrom>=(100-4*spell_targets."
-      "chain_lightning)|buff.master_of_the_elements.up|spell_targets.chain_lightning>3",
+      "if=!talent.master_of_the_elements.enabled|buff.stormkeeper.up|maelstrom>=(100-4*spell_targets.chain_lightning)|"
+      "buff.master_of_the_elements.up|spell_targets.chain_lightning>3",
       "Try to game Earthquake with Master of the Elements buff when fighting 3 targets. Don't overcap Maelstrom!" );
+  aoe->add_action( this, "Chain Lightning", "if=buff.stormkeeper.remains<3*gcd*buff.stormkeeper.stack",
+                   "Make sure you don't lose a Stormkeeper." );
   aoe->add_action( this, "Lava Burst",
-                   "if=(buff.lava_surge.up|buff.ascendance.up)&spell_targets.chain_lightning<4&(!talent.storm_"
-                   "elemental.enabled|cooldown.storm_elemental.remains<120)",
+                   "if=buff.lava_surge.up&spell_targets.chain_lightning<4&(!talent.storm_elemental.enabled|cooldown."
+                   "storm_elemental.remains<120)&dot.flame_shock.ticking",
                    "Only cast Lava Burst on three targets if it is an instant and Storm Elemental is NOT active." );
+  aoe->add_talent( this, "Icefury", "if=spell_targets.chain_lightning<4&!buff.ascendance.up" );
+  aoe->add_action( this, "Frost Shock", "if=spell_targets.chain_lightning<4&buff.icefury.up&!buff.ascendance.up" );
   aoe->add_talent( this, "Elemental Blast",
                    "if=talent.elemental_blast.enabled&spell_targets.chain_lightning<4&(!talent.storm_elemental."
                    "enabled|cooldown.storm_elemental.remains<120)",
@@ -7806,7 +7938,7 @@ void shaman_t::init_action_list_elemental()
       "if=(!ticking|talent.storm_elemental.enabled&cooldown.storm_elemental.remains<2*gcd|dot.flame_shock.remains<="
       "gcd|talent.ascendance.enabled&dot.flame_shock.remains<(cooldown.ascendance.remains+buff.ascendance.duration)&"
       "cooldown.ascendance.remains<4&(!talent.storm_elemental.enabled|talent.storm_elemental.enabled&cooldown.storm_"
-      "elemental.remains<120))&buff.wind_gust.stack<14",
+      "elemental.remains<120))&buff.wind_gust.stack<14&!buff.surge_of_power.up",
       "Ensure FS is active unless you have 14 or more stacks of Wind Gust from Storm Elemental. (Edge case: upcoming "
       "Asc but active SE; don't )" );
   single_target->add_talent( this, "Ascendance",
@@ -7923,14 +8055,16 @@ void shaman_t::init_action_list_enhancement()
     return;
   }
 
-  action_priority_list_t* precombat = get_action_priority_list( "precombat" );
-  action_priority_list_t* def       = get_action_priority_list( "default" );
-  action_priority_list_t* cds       = get_action_priority_list( "cds" );
-  action_priority_list_t* buffs     = get_action_priority_list( "buffs" );
-  action_priority_list_t* core      = get_action_priority_list( "core" );
-  action_priority_list_t* filler    = get_action_priority_list( "filler" );
-  action_priority_list_t* opener    = get_action_priority_list( "opener" );
-  action_priority_list_t* asc       = get_action_priority_list( "asc" );
+  action_priority_list_t* precombat        = get_action_priority_list( "precombat" );
+  action_priority_list_t* def              = get_action_priority_list( "default" );
+  action_priority_list_t* cds              = get_action_priority_list( "cds" );
+  action_priority_list_t* priority         = get_action_priority_list( "priority" );
+  action_priority_list_t* maintenance      = get_action_priority_list( "maintenance" );
+  action_priority_list_t* freezerburn_core = get_action_priority_list( "freezerburn_core" );
+  action_priority_list_t* default_core     = get_action_priority_list( "default_core" );
+  action_priority_list_t* filler           = get_action_priority_list( "filler" );
+  action_priority_list_t* opener           = get_action_priority_list( "opener" );
+  action_priority_list_t* asc              = get_action_priority_list( "asc" );
 
   // Flask
   precombat->add_action( "flask" );
@@ -7947,20 +8081,53 @@ void shaman_t::init_action_list_enhancement()
   // All Shamans Bloodlust and Wind Shear by default
   def->add_action( this, "Wind Shear" );
   def->add_action(
-      "variable,name=furyCheck45,value=(!talent.fury_of_air.enabled|(talent.fury_of_air.enabled&maelstrom>45))" );
+      "variable,name=cooldown_sync,value=(talent.ascendance.enabled&(buff.ascendance.up|cooldown.ascendance.remains>50)"
+      ")"
+      "|(!talent.ascendance.enabled&(feral_spirit.remains>5|cooldown.feral_spirit.remains>50))",
+      "Attempt to sync racial cooldowns with Ascendance or Feral Spirits, or use on cooldown if saving them will "
+      "result "
+      "in significant cooldown waste" );
   def->add_action(
-      "variable,name=furyCheck35,value=(!talent.fury_of_air.enabled|(talent.fury_of_air.enabled&maelstrom>35))" );
+      "variable,name=furyCheck_SS,value=maelstrom>=(talent.fury_of_air.enabled*(6+action.stormstrike.cost))",
+      "Do not use a maelstrom-costing ability if it will bring you to 0 maelstrom and cancel fury of air." );
   def->add_action(
-      "variable,name=furyCheck25,value=(!talent.fury_of_air.enabled|(talent.fury_of_air.enabled&maelstrom>25))" );
+      "variable,name=furyCheck_LL,value=maelstrom>=(talent.fury_of_air.enabled*(6+action.lava_lash.cost))" );
   def->add_action(
-      "variable,name=OCPool80,value=(!talent.overcharge.enabled|active_enemies>1|(talent.overcharge.enabled&active_"
-      "enemies=1&(cooldown.lightning_bolt.remains>=2*gcd|maelstrom>80)))" );
+      "variable,name=furyCheck_CL,value=maelstrom>=(talent.fury_of_air.enabled*(6+action.crash_lightning.cost))" );
   def->add_action(
-      "variable,name=OCPool70,value=(!talent.overcharge.enabled|active_enemies>1|(talent.overcharge.enabled&active_"
-      "enemies=1&(cooldown.lightning_bolt.remains>=2*gcd|maelstrom>70)))" );
+      "variable,name=furyCheck_FB,value=maelstrom>=(talent.fury_of_air.enabled*(6+action.frostbrand.cost))" );
   def->add_action(
-      "variable,name=OCPool60,value=(!talent.overcharge.enabled|active_enemies>1|(talent.overcharge.enabled&active_"
-      "enemies=1&(cooldown.lightning_bolt.remains>=2*gcd|maelstrom>60)))" );
+      "variable,name=furyCheck_ES,value=maelstrom>=(talent.fury_of_air.enabled*(6+action.earthen_spike.cost))" );
+  def->add_action( "variable,name=furyCheck_LB,value=maelstrom>=(talent.fury_of_air.enabled*(6+40))" );
+  def->add_action(
+      "variable,name=OCPool,value=(active_enemies>1|(cooldown.lightning_bolt.remains>=2*gcd))",
+      "Attempt to pool maelstrom so you'll be able to cast a fully-powered lightning bolt as soon as it's available "
+      "when fighting one target." );
+  def->add_action(
+      "variable,name=OCPool_SS,value=(variable.OCPool|maelstrom>=(talent.overcharge.enabled*(40+action.stormstrike."
+      "cost)))" );
+  def->add_action(
+      "variable,name=OCPool_LL,value=(variable.OCPool|maelstrom>=(talent.overcharge.enabled*(40+action.lava_lash.cost))"
+      ")" );
+  def->add_action(
+      "variable,name=OCPool_CL,value=(variable.OCPool|maelstrom>=(talent.overcharge.enabled*(40+action.crash_lightning."
+      "cost)))" );
+  def->add_action(
+      "variable,name=OCPool_FB,value=(variable.OCPool|maelstrom>=(talent.overcharge.enabled*(40+action.frostbrand.cost)"
+      "))" );
+  def->add_action(
+      "variable,name=CLPool_LL,value=active_enemies=1|maelstrom>=(action.crash_lightning.cost+action.lava_lash.cost)",
+      "Attempt to pool maelstrom for Crash Lightning if multiple targets are present." );
+  def->add_action(
+      "variable,name=CLPool_SS,value=active_enemies=1|maelstrom>=(action.crash_lightning.cost+action.stormstrike."
+      "cost)" );
+  def->add_action(
+      "variable,name=freezerburn_enabled,value=(talent.hot_hand.enabled&talent.hailstorm.enabled&azerite.primal_primer."
+      "enabled)" );
+  def->add_action(
+      "variable,name=rockslide_enabled,value=(!variable.freezerburn_enabled&(talent.boulderfist.enabled&talent."
+      "landslide.enabled"
+      "&azerite.strength_of_earth.enabled))" );
 
   // Turn on auto-attack first thing
   def->add_action( "auto_attack" );
@@ -7969,68 +8136,113 @@ void shaman_t::init_action_list_enhancement()
 
   def->add_action( "call_action_list,name=opener" );
   def->add_action( "call_action_list,name=asc,if=buff.ascendance.up" );
-  def->add_action( "call_action_list,name=buffs" );
+  def->add_action( "call_action_list,name=priority" );
+  def->add_action( "call_action_list,name=maintenance,if=active_enemies<3" );
   def->add_action( "call_action_list,name=cds" );
-  def->add_action( "call_action_list,name=core" );
+  def->add_action( "call_action_list,name=freezerburn_core,if=variable.freezerburn_enabled" );
+  def->add_action( "call_action_list,name=default_core,if=!variable.freezerburn_enabled" );
+  def->add_action( "call_action_list,name=maintenance,if=active_enemies>=3" );
   def->add_action( "call_action_list,name=filler" );
 
   opener->add_action( this, "Rockbiter", "if=maelstrom<15&time<gcd" );
 
-  asc->add_action( this, "Crash Lightning", "if=!buff.crash_lightning.up&active_enemies>1&variable.furyCheck25" );
+  asc->add_action( this, "Crash Lightning", "if=!buff.crash_lightning.up&active_enemies>1&variable.furyCheck_CL" );
   asc->add_action( this, "Rockbiter", "if=talent.landslide.enabled&!buff.landslide.up&charges_fractional>1.7" );
   asc->add_action( this, "Windstrike" );
 
-  buffs->add_action( this, "Crash Lightning", "if=!buff.crash_lightning.up&active_enemies>1&variable.furyCheck25" );
-  buffs->add_action( this, "Rockbiter", "if=talent.landslide.enabled&!buff.landslide.up&charges_fractional>1.7" );
-  buffs->add_talent( this, "Fury of Air", "if=!ticking&maelstrom>=20" );
-  buffs->add_action( this, "Flametongue", "if=!buff.flametongue.up" );
-  buffs->add_action( this, "Frostbrand", "if=talent.hailstorm.enabled&!buff.frostbrand.up&variable.furyCheck25" );
-  buffs->add_action( this, "Flametongue", "if=buff.flametongue.remains<4.8+gcd" );
-  buffs->add_action( this, "Frostbrand",
-                     "if=talent.hailstorm.enabled&buff.frostbrand.remains<4.8+gcd&variable.furyCheck25" );
-  buffs->add_talent( this, "Totem Mastery", "if=buff.resonance_totem.remains<2" );
+  priority->add_action( this, "Crash Lightning",
+                        "if=active_enemies>=(8-(talent.forceful_winds.enabled*3))"
+                        "&variable.freezerburn_enabled&variable.furyCheck_CL" );
+  priority->add_action( this, "Lava Lash",
+                        "if=azerite.primal_primer.rank>=2&debuff.primal_primer.stack=10"
+                        "&active_enemies=1&variable.freezerburn_enabled&variable.furyCheck_LL" );
+  priority->add_action( this, "Crash Lightning",
+                        "if=!buff.crash_lightning.up&active_enemies>1"
+                        "&variable.furyCheck_CL" );
+  priority->add_talent( this, "Fury of Air",
+                        "if=!buff.fury_of_air.up&maelstrom>=20"
+                        "&spell_targets.fury_of_air_damage>=(1+variable.freezerburn_enabled)" );
+  priority->add_talent( this, "Fury of Air",
+                        "if=buff.fury_of_air.up&&spell_targets.fury_of_air_damage<(1+variable.freezerburn_enabled)" );
+  priority->add_talent( this, "Totem Mastery", "if=buff.resonance_totem.remains<=2*gcd" );
+  priority->add_talent( this, "Sundering", "if=active_enemies>=3" );
+  priority->add_action( this, "Rockbiter", "if=talent.landslide.enabled&!buff.landslide.up&charges_fractional>1.7" );
+  priority->add_action(
+      this, "Frostbrand",
+      "if=(azerite.natural_harmony.enabled&buff.natural_harmony_frost.remains<=2*gcd)"
+      "&talent.hailstorm.enabled&variable.furyCheck_FB",
+      "With Natural Harmony, elevate the priority of elemental attacks in order to maintain the buffs when "
+      "they're about to expire." );
+  priority->add_action( this, "Flametongue",
+                        "if=(azerite.natural_harmony.enabled&buff.natural_harmony_fire.remains<=2*gcd)" );
+  priority->add_action( this, "Rockbiter",
+                        "if=(azerite.natural_harmony.enabled&buff.natural_harmony_nature.remains<=2*gcd)"
+                        "&maelstrom<70" );
+
+  maintenance->add_action( this, "Flametongue", "if=!buff.flametongue.up" );
+  maintenance->add_action( this, "Frostbrand",
+                           "if=talent.hailstorm.enabled&!buff.frostbrand.up&variable.furyCheck_FB" );
 
   cds->add_action( this, "Bloodlust", "if=azerite.ancestral_resonance.enabled",
                    "Cast Bloodlust manually if the Azerite Trait Ancestral Resonance is present." );
+  cds->add_action( "berserking,if=variable.cooldown_sync" );
+  cds->add_action( "blood_fury,if=variable.cooldown_sync" );
+  cds->add_action( "fireblood,if=variable.cooldown_sync" );
+  cds->add_action( "ancestral_call,if=variable.cooldown_sync" );
   cds->add_action(
-      "berserking,if=(talent.ascendance.enabled&buff.ascendance.up)|(talent.elemental_spirits.enabled&feral_spirit."
-      "remains>5)|(!talent.ascendance.enabled&!talent.elemental_spirits.enabled)" );
-  cds->add_action(
-      "blood_fury,if=(talent.ascendance.enabled&(buff.ascendance.up|cooldown.ascendance.remains>50))|(!talent."
-      "ascendance.enabled&(feral_spirit.remains>5|cooldown.feral_spirit.remains>50))" );
-  cds->add_action(
-      "fireblood,if=(talent.ascendance.enabled&(buff.ascendance.up|cooldown.ascendance.remains>50))|(!talent."
-      "ascendance.enabled&(feral_spirit.remains>5|cooldown.feral_spirit.remains>50))" );
-  cds->add_action(
-      "ancestral_call,if=(talent.ascendance.enabled&(buff.ascendance.up|cooldown.ascendance.remains>50))|(!talent."
-      "ascendance.enabled&(feral_spirit.remains>5|cooldown.feral_spirit.remains>50))" );
-  cds->add_action(
-      "potion,if=buff.ascendance.up|!talent.ascendance.enabled&feral_spirit.remains>5|target.time_to_die<=60" );
+      "potion,if=buff.ascendance.up|!talent.ascendance.enabled&feral_spirit.remains>5|target.time_to_die<=60",
+      "Attempt to sync your DPS potion with a cooldown, unless the target is about to die." );
   cds->add_action( this, "Feral Spirit" );
   cds->add_talent( this, "Ascendance", "if=cooldown.strike.remains>0" );
   cds->add_action( this, "Earth Elemental" );
 
-  core->add_talent( this, "Earthen Spike", "if=variable.furyCheck25" );
-  core->add_talent( this, "Sundering", "if=active_enemies>=3" );
-  core->add_action( this, "Stormstrike",
-                    "cycle_targets=1,if=azerite.lightning_conduit.enabled&!debuff.lightning_conduit.up&active_enemies>"
-                    "1&(buff.stormbringer.up|(variable.OCPool70&variable.furyCheck35))" );
-  core->add_action( this, "Stormstrike",
-                    "if=buff.stormbringer.up|(buff.gathering_storms.up&variable.OCPool70&variable.furyCheck35)" );
-  core->add_action( this, "Crash Lightning", "if=active_enemies>=3&variable.furyCheck25" );
-  core->add_action( this, "Lightning Bolt",
-                    "if=talent.overcharge.enabled&active_enemies=1&variable.furyCheck45&maelstrom>=40" );
-  core->add_action( this, "Stormstrike", "if=variable.OCPool70&variable.furyCheck35" );
-  core->add_talent( this, "Sundering" );
-  core->add_action( this, "Crash Lightning", "if=talent.forceful_winds.enabled&active_enemies>1&variable.furyCheck25" );
-  core->add_action( this, "Flametongue", "if=talent.searing_assault.enabled" );
-  core->add_action( this, "Lava Lash", "if=talent.hot_hand.enabled&buff.hot_hand.react" );
-  core->add_action( this, "Crash Lightning", "if=active_enemies>1&variable.furyCheck25" );
+  freezerburn_core->add_action( this, "Lava Lash",
+                                "target_if=max:debuff.primal_primer.stack,if=azerite.primal_primer.rank>=2"
+                                "&debuff.primal_primer.stack=10&variable.furyCheck_LL&variable.CLPool_LL" );
+  freezerburn_core->add_talent( this, "Earthen Spike", "if=variable.furyCheck_ES" );
+  freezerburn_core->add_action( this, "Stormstrike",
+                                "cycle_targets=1,if=active_enemies>1&azerite.lightning_conduit.enabled"
+                                "&!debuff.lightning_conduit.up&variable.furyCheck_SS" );
+  freezerburn_core->add_action( this, "Stormstrike",
+                                "if=buff.stormbringer.up|(active_enemies>1&buff.gathering_storms.up"
+                                "&variable.furyCheck_SS)" );
+  freezerburn_core->add_action( this, "Crash Lightning", "if=active_enemies>=3&variable.furyCheck_CL" );
+  freezerburn_core->add_action( this, "Lightning Bolt",
+                                "if=talent.overcharge.enabled&active_enemies=1"
+                                "&variable.furyCheck_LB&maelstrom>=40" );
+  freezerburn_core->add_action( this, "Lava Lash",
+                                "if=azerite.primal_primer.rank>=2&debuff.primal_primer.stack>7"
+                                "&variable.furyCheck_LL&variable.CLPool_LL" );
+  freezerburn_core->add_action( this, "Stormstrike", "if=variable.OCPool_SS&variable.furyCheck_SS&variable.CLPool_SS" );
+  freezerburn_core->add_action( this, "Lava Lash", "if=debuff.primal_primer.stack=10&variable.furyCheck_LL" );
 
+  default_core->add_talent( this, "Earthen Spike", "if=variable.furyCheck_ES" );
+  default_core->add_action( this, "Stormstrike",
+                            "cycle_targets=1,if=active_enemies>1&azerite.lightning_conduit.enabled"
+                            "&!debuff.lightning_conduit.up&variable.furyCheck_SS" );
+  default_core->add_action( this, "Stormstrike",
+                            "if=buff.stormbringer.up|(active_enemies>1&buff.gathering_storms.up"
+                            "&variable.furyCheck_SS)" );
+  default_core->add_action( this, "Crash Lightning", "if=active_enemies>=3&variable.furyCheck_CL" );
+  default_core->add_action( this, "Lightning Bolt",
+                            "if=talent.overcharge.enabled&active_enemies=1"
+                            "&variable.furyCheck_LB&maelstrom>=40" );
+  default_core->add_action( this, "Stormstrike", "if=variable.OCPool_SS&variable.furyCheck_SS" );
+
+  filler->add_talent( this, "Sundering" );
+  filler->add_action( this, "Crash Lightning",
+                      "if=talent.forceful_winds.enabled&active_enemies>1&variable.furyCheck_CL" );
+  filler->add_action( this, "Flametongue", "if=talent.searing_assault.enabled" );
+  filler->add_action( this, "Lava Lash",
+                      "if=!azerite.primal_primer.enabled&talent.hot_hand.enabled&buff.hot_hand.react" );
+  filler->add_action( this, "Crash Lightning", "if=active_enemies>1&variable.furyCheck_CL" );
   filler->add_action( this, "Rockbiter", "if=maelstrom<70&!buff.strength_of_earth.up" );
-  filler->add_action( this, "Crash Lightning", "if=talent.crashing_storm.enabled&variable.OCPool60" );
-  filler->add_action( this, "Lava Lash", "if=variable.OCPool80&variable.furyCheck45" );
+  filler->add_action( this, "Crash Lightning", "if=talent.crashing_storm.enabled&variable.OCPool_CL" );
+  filler->add_action( this, "Lava Lash", "if=variable.OCPool_LL&variable.furyCheck_LL" );
   filler->add_action( this, "Rockbiter" );
+  filler->add_action( this, "Frostbrand",
+                      "if=talent.hailstorm.enabled&buff.frostbrand.remains<4.8+gcd"
+                      "&variable.furyCheck_FB" );
   filler->add_action( this, "Flametongue" );
 }
 
@@ -8181,7 +8393,7 @@ double shaman_t::composite_spell_haste() const
 {
   double h = player_t::composite_spell_haste();
 
-  if ( buff.tailwind_totem_ele->up() )
+  if ( buff.tailwind_totem_ele && buff.tailwind_totem_ele->up() )
     h *= 1.0 / ( 1.0 + buff.tailwind_totem_ele->check_value() );
 
   if ( buff.unlimited_power->up() )
@@ -8247,7 +8459,7 @@ double shaman_t::composite_melee_haste() const
 {
   double h = player_t::composite_melee_haste();
 
-  if ( buff.tailwind_totem_ele->up() )
+  if ( buff.tailwind_totem_ele && buff.tailwind_totem_ele->up() )
   {
     h *= 1.0 / ( 1.0 + buff.tailwind_totem_ele->check_value() );
   }
@@ -8933,6 +9145,13 @@ struct shaman_module_t : public module_t
 
   void register_hotfixes() const override
   {
+    hotfix::register_effect( "Shaman", "2019-01-07",
+                             "Incorrect Maelstrom generation value for Chain Lightning Overloads.",
+                             723964 )  // spell 190493
+        .field( "base_value" )
+        .operation( hotfix::HOTFIX_SET )
+        .modifier( 2 )
+        .verification_value( 3 );
   }
 
   virtual void combat_begin( sim_t* ) const override

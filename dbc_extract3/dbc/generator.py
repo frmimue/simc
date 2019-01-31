@@ -1235,6 +1235,10 @@ class SpellDataGenerator(DataGenerator):
          270827,
          # Boralus Blood Sausage Feast
          290469, 290468, 290467, 288075, 288074,
+         # Buffs for Variable Intensity Gigavolt Oscillating Reactor
+         287916, 290052, 290051, 290042, 287967,
+         # Tidestorm Codex
+         288086,
         ),
 
         # Warrior:
@@ -1255,6 +1259,7 @@ class SpellDataGenerator(DataGenerator):
             ( 242953, 0 ),          # Bloody Rage
             ( 278497, 0 ),          # Seismic Wave (Azerite)
             ( 195707, 0 ),          # Rage gain from taking hits
+            ( 161798, 0 ),          # Riposte passive (turns crit rating into parry)
         ),
 
         # Paladin:
@@ -1373,7 +1378,6 @@ class SpellDataGenerator(DataGenerator):
           ( 211947, 0 ),    # Shadow Empowerment for Gargoyle
           ( 81141, 0 ),     # Crimson Scourge buff
           ( 212423, 5 ),    # Skulker Shot for All Will Serve
-          ( 207260, 5 ),    # Arrow Spray for All Will Serve
           ( 45470, 0 ),     # Death Strike heal
           ( 196545, 0 ),    # Bonestorm heal
           ( 253590, 0 ),    # T21 4P frost damage component
@@ -1383,6 +1387,8 @@ class SpellDataGenerator(DataGenerator):
           ( 279606, 0 ),    # Last Surprise azerite trait
           ( 273096, 0 ),    # Horrid Experimentation azerite trait
           ( 49088, 0 ),     # Anti-magic Shell RP generation
+          ( 288548, 5 ), ( 288546, 5 ),   # Magus of the Dead's (azerite trait) Frostbolt and Shadow Bolt spells
+          ( 286836, 0 ), ( 286954, 0 ), ( 290814, 0 ) # Helchains damage (azerite trait)
 
         ),
 
@@ -3743,6 +3749,16 @@ class SetBonusListGenerator(DataGenerator):
             'name'   : 'waycrests_legacy',
             'bonuses': [ 1439 ],
             'tier'   : 21
+        },
+        {
+            'name'   : 'gift_of_the_loa',
+            'bonuses': [ 1442 ],
+            'tier'   : 23
+        },
+        {
+            'name'   : 'keepsakes',
+            'bonuses': [ 1443 ],
+            'tier'   : 23
         }
     ]
 
@@ -4405,6 +4421,10 @@ class AzeriteDataGenerator(DataGenerator):
             fields = entry.field('id', 'id_spell', 'id_bonus')
             fields += self._spellname_db[entry.id_spell].field('name')
             for id, data in self._azeritepowersetmember_db.items():
+                # Skip power set 1, it seems some sort of a debug set and contains no proper data
+                if data.id_parent == 1:
+                    continue
+
                 if entry.id != data.id_power:
                     continue
                 fields += data.field('tier')

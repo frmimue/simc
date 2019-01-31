@@ -621,6 +621,13 @@ void register_azerite_powers()
   unique_gear::register_special_effect( 266937, special_effects::gutripper             );
   unique_gear::register_special_effect( 280582, special_effects::battlefield_focus_precision );
   unique_gear::register_special_effect( 280627, special_effects::battlefield_focus_precision );
+  unique_gear::register_special_effect( 287662, special_effects::endless_hunger        ); // Endless Hunger
+  unique_gear::register_special_effect( 287604, special_effects::endless_hunger        ); // Ancient's Bulwark
+  unique_gear::register_special_effect( 287631, special_effects::apothecarys_concoctions );
+  unique_gear::register_special_effect( 287467, special_effects::shadow_of_elune       );
+  unique_gear::register_special_effect( 288953, special_effects::treacherous_covenant  );
+  unique_gear::register_special_effect( 288749, special_effects::seductive_power       );
+  unique_gear::register_special_effect( 288802, special_effects::bonded_souls          );
 }
 
 void register_azerite_target_data_initializers( sim_t* sim )
@@ -987,7 +994,7 @@ void thunderous_blast( special_effect_t& effect )
     return;
 
   effect.execute_action = unique_gear::create_proc_action<thunderous_blast_t>( "thunderous_blast", effect, power );
-  effect.spell_id = effect.player -> find_spell( 280383 ) -> id();
+  effect.spell_id = 280383;
 
   new dbc_proc_callback_t( effect.player, effect );
 }
@@ -1009,7 +1016,7 @@ void filthy_transfusion( special_effect_t& effect )
     return;
 
   effect.execute_action = unique_gear::create_proc_action<filthy_transfusion_t>( "filthy_transfusion", effect, power );
-  effect.spell_id = effect.player -> find_spell( 273835 ) -> id();
+  effect.spell_id = 273835;
 
   new dbc_proc_callback_t( effect.player, effect );
 }
@@ -1035,9 +1042,9 @@ void retaliatory_fury( special_effect_t& effect )
   if ( !power.enabled() )
     return;
 
-  const spell_data_t* driver = power.spell_ref().effectN( 1 ).trigger();
+  const spell_data_t* driver = power.spell_ref().effectN( 2 ).trigger();
   const spell_data_t* mastery_spell = effect.player -> find_spell( power.spell_ref().id() == 280624 ? 280861 : 280787 );
-  const spell_data_t* absorb_spell = driver -> effectN( 1 ).trigger();
+  const spell_data_t* absorb_spell = effect.player -> find_spell( power.spell_ref().id() == 280624 ? 280862 : 280788 );
 
   buff_t* mastery = buff_t::find( effect.player, tokenized_name( mastery_spell ) );
   if ( !mastery )
@@ -1534,7 +1541,7 @@ void tidal_surge( special_effect_t& effect )
     return;
 
   effect.execute_action = unique_gear::create_proc_action<tidal_surge_t>( "tidal_surge", effect, power );
-  effect.spell_id = effect.player -> find_spell( 280403 ) -> id();
+  effect.spell_id = 280403;
 
   new dbc_proc_callback_t( effect.player, effect );
 }
@@ -1565,7 +1572,7 @@ void heed_my_call( special_effect_t& effect )
     return;
 
   effect.execute_action = unique_gear::create_proc_action<heed_my_call_t>( "heed_my_call", effect, power );
-  effect.spell_id = effect.player -> find_spell( 271681 ) -> id();
+  effect.spell_id = 271681;
 
   new dbc_proc_callback_t( effect.player, effect );
 }
@@ -1610,7 +1617,7 @@ void azerite_globules( special_effect_t& effect )
     return;
 
   effect.execute_action = unique_gear::create_proc_action<azerite_globules_t>( "azerite_globules", effect, power );
-  effect.spell_id = effect.player -> find_spell( 279955 ) -> id();
+  effect.spell_id = 279955;
 
   new azerite_globules_proc_cb_t( effect );
 }
@@ -2445,6 +2452,191 @@ void battlefield_focus_precision( special_effect_t& effect )
   effect.spell_id = effect.spell_id == 280627 ? 280854 : 280816;
 
   new bf_trigger_cb_t( effect, trigger_cb, power.spell_ref().effectN( 2 ).base_value() );
+}
+
+void endless_hunger( special_effect_t& effect )
+{
+  azerite_power_t power = effect.player->find_azerite_spell( effect.driver()->name_cstr() );
+  if ( !power.enabled() )
+  {
+    return;
+  }
+
+  effect.player->passive.versatility_rating += power.value( 2 );
+}
+
+void apothecarys_concoctions( special_effect_t& effect )
+{
+  struct apothecarys_blight_t : public unique_gear::proc_spell_t
+  {
+    apothecarys_blight_t( const special_effect_t& e, const azerite_power_t& power ):
+      proc_spell_t( "apothecarys_blight", e.player, e.player -> find_spell( 287638 ) )
+    {
+      base_td = power.value( 1 );
+      tick_may_crit = true;
+    }
+
+    double action_multiplier() const override
+    {
+      double am = proc_spell_t::action_multiplier();
+
+      am *= 2.0 - this->target->health_percentage() / 100.0;
+
+      return am;
+    }
+  };
+
+  azerite_power_t power = effect.player -> find_azerite_spell( effect.driver() -> name_cstr() );
+  if ( !power.enabled() )
+    return;
+  
+  effect.execute_action = unique_gear::create_proc_action<apothecarys_blight_t>( "apothecarys_concoctions", effect, power );
+  effect.spell_id = 287633;
+
+  new dbc_proc_callback_t( effect.player, effect );
+}
+
+void shadow_of_elune( special_effect_t& effect )
+{
+  azerite_power_t power = effect.player->find_azerite_spell( effect.driver()->name_cstr() );
+  if ( !power.enabled() )
+    return;
+
+  const spell_data_t* driver = effect.driver()->effectN( 1 ).trigger();
+  const spell_data_t* buff_data = driver->effectN( 1 ).trigger();
+
+  buff_t* buff = buff_t::find( effect.player, "shadow_of_elune" );
+  if ( !buff )
+  {
+    buff = make_buff<stat_buff_t>( effect.player, "shadow_of_elune", buff_data )
+      ->add_stat( STAT_HASTE_RATING, power.value( 1 ) );
+  }
+
+  effect.custom_buff = buff;
+  effect.spell_id = driver->id();
+
+  new dbc_proc_callback_t( effect.player, effect );
+}
+
+void treacherous_covenant( special_effect_t& effect )
+{
+  azerite_power_t power = effect.player->find_azerite_spell( effect.driver()->name_cstr() );
+  if ( !power.enabled() )
+    return;
+
+  // This spell selects which buff to trigger depending on player health %.
+  const spell_data_t* driver = effect.driver()->effectN( 1 ).trigger();
+  const spell_data_t* buff_data = driver->effectN( 1 ).trigger();
+
+  buff_t* buff = buff_t::find( effect.player, "treacherous_covenant" );
+  if ( !buff )
+  {
+    buff = make_buff<stat_buff_t>( effect.player, "treacherous_covenant", buff_data )
+      ->add_stat( effect.player->convert_hybrid_stat( STAT_STR_AGI_INT ), power.value( 1 ) );
+  }
+
+  // TODO: Model losing the buff when droping below 50%.
+  effect.player->register_combat_begin( [ buff ] ( player_t* )
+  {
+    buff->trigger();
+
+    // Simple system to allow for some manipulation of the buff uptime.
+    if ( buff->sim->bfa_opts.covenant_chance < 1.0 )
+    {
+      make_repeating_event( buff->sim, buff->sim->bfa_opts.covenant_period, [ buff ]
+      {
+        if ( buff->rng().roll( buff->sim->bfa_opts.covenant_chance ) )
+          buff->trigger();
+        else
+          buff->expire();
+      } );
+    }
+  } );
+}
+
+void seductive_power( special_effect_t& effect )
+{
+  azerite_power_t power = effect.player->find_azerite_spell( effect.driver()->name_cstr() );
+  if ( !power.enabled() )
+    return;
+
+  const spell_data_t* driver = effect.driver()->effectN( 1 ).trigger();
+
+  buff_t* buff = buff_t::find( effect.player, "seductive_power" );
+  if ( !buff )
+  {
+    // Doesn't look like we can get from the driver to this buff, hardcode the spell id.
+    buff = make_buff<stat_buff_t>( effect.player, "seductive_power", effect.player->find_spell( 288777 ) )
+      ->add_stat( STAT_ALL, power.value( 1 ) );
+  }
+
+  struct seductive_power_cb_t : public dbc_proc_callback_t
+  {
+    seductive_power_cb_t( special_effect_t& effect ) :
+      dbc_proc_callback_t( effect.player, effect )
+    { }
+
+    void execute( action_t*, action_state_t* ) override
+    {
+      if ( rng().roll( listener->sim->bfa_opts.seductive_power_pickup_chance ) )
+        proc_buff->trigger();
+      else
+        proc_buff->decrement();
+    }
+  };
+
+  // Spell data is missing proc flags, just pick something that's gonna be close to what the
+  // tooltip says.
+  effect.proc_flags_ = PF_ALL_DAMAGE | PF_ALL_HEAL;
+  effect.spell_id = driver->id();
+  effect.custom_buff = buff;
+
+  new seductive_power_cb_t( effect );
+
+  int initial_stacks = effect.player->sim->bfa_opts.initial_seductive_power_stacks;
+  if ( initial_stacks > 0 )
+  {
+    effect.player->register_combat_begin( [ = ] ( player_t* ) { buff->trigger( initial_stacks ); } );
+  }
+}
+
+void bonded_souls( special_effect_t& effect )
+{
+  azerite_power_t power = effect.player->find_azerite_spell( effect.driver()->name_cstr() );
+  if ( !power.enabled() )
+    return;
+
+  const spell_data_t* driver = effect.driver()->effectN( 2 ).trigger();
+  const spell_data_t* driver_buff_data = driver->effectN( 1 ).trigger();
+  const spell_data_t* haste_buff_data = driver_buff_data->effectN( 1 ).trigger();
+
+  buff_t* haste_buff = buff_t::find( effect.player, "bonded_souls" );
+  if ( !haste_buff )
+  {
+    haste_buff = make_buff<stat_buff_t>( effect.player, "bonded_souls", haste_buff_data )
+      ->add_stat( STAT_HASTE_RATING, power.value( 1 ) )
+      ->set_refresh_behavior( buff_refresh_behavior::DURATION );
+  }
+
+  buff_t* driver_buff = buff_t::find( effect.player, "bonded_souls_driver" );
+  if ( !driver_buff )
+  {
+    // TODO: Healing portion of the trait?
+    driver_buff = make_buff( effect.player, "bonded_souls_driver", driver_buff_data )
+      ->set_refresh_behavior( buff_refresh_behavior::DURATION )
+      ->set_tick_behavior( buff_tick_behavior::CLIP )
+      ->set_tick_zero( true )
+      ->set_tick_callback( [ haste_buff ] ( buff_t*, int, const timespan_t& )
+        { haste_buff->trigger(); } );
+  }
+
+  // Spell data is missing proc flags, just pick something that's gonna be close to what the
+  // tooltip says.
+  effect.proc_flags_ = PF_ALL_DAMAGE | PF_ALL_HEAL;
+  effect.spell_id = driver->id();
+  effect.custom_buff = driver_buff;
+
+  new dbc_proc_callback_t( effect.player, effect );
 }
 
 } // Namespace special effects ends

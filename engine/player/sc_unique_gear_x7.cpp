@@ -129,6 +129,15 @@ namespace items
   void vanquished_tendril_of_ghuun( special_effect_t& );
   void syringe_of_bloodborne_infirmity( special_effect_t& );
   void disc_of_systematic_regression( special_effect_t& );
+  // 8.1.0 - Battle of Dazar'alor Trinkets
+  void incandescent_sliver( special_effect_t& );
+  void tidestorm_codex( special_effect_t& );
+  void invocation_of_yulon( special_effect_t& );
+  void variable_intensity_gigavolt_oscillating_reactor( special_effect_t& );
+  void variable_intensity_gigavolt_oscillating_reactor_onuse( special_effect_t& );
+  void everchill_anchor( special_effect_t& );
+  void ramping_amplitude_gigavolt_engine( special_effect_t& );
+  void grongs_primal_rage( special_effect_t& );
 }
 
 namespace util
@@ -174,6 +183,9 @@ namespace set_bonus
 {
   // 8.0 Dungeon
   void waycrest_legacy( special_effect_t& );
+  // 8.1.0 Raid
+  void gift_of_the_loa( special_effect_t& );
+  void keepsakes_of_the_resolute_commandant( special_effect_t& );
 }
 
 // Galley Banquet ===========================================================
@@ -1637,7 +1649,658 @@ void items::berserkers_juju( special_effect_t& effect )
   effect.execute_action = create_proc_action <berserkers_juju_t>( "berserkers_juju", effect );
 }
 
-//Waycrest's Legacy Set Bonus ============================================
+// Incandescent Sliver ===================================================
+
+void items::incandescent_sliver( special_effect_t& effect )
+{
+  player_t* p = effect.player;
+
+  buff_t* mastery_buff = buff_t::find( p, "incandescent_brilliance" );
+  if ( !mastery_buff )
+  {
+    mastery_buff = make_buff<stat_buff_t>( p, "incandescent_brilliance", p->find_spell( 289524 ), effect.item );
+  }
+
+  buff_t* crit_buff = buff_t::find( p, "incandescent_luster" );
+  if ( !crit_buff )
+  {
+    crit_buff = make_buff<stat_buff_t>( p, "incandescent_luster", p->find_spell( 289523 ), effect.item )
+      ->set_stack_change_callback( [ mastery_buff ] ( buff_t* b, int, int cur )
+        {
+          if ( cur == b->max_stack() )
+            mastery_buff->trigger();
+          else
+            mastery_buff->expire();
+        } );
+  }
+
+  timespan_t period = effect.driver()->effectN( 1 ).period();
+  p->register_combat_begin( [ crit_buff, period ] ( player_t* )
+  {
+    crit_buff->trigger( crit_buff->max_stack() );
+    make_repeating_event( crit_buff->sim, period, [ crit_buff ]
+    {
+      if ( crit_buff->rng().roll( crit_buff->sim->bfa_opts.incandescent_sliver_chance ) )
+        crit_buff->trigger();
+      else
+        crit_buff->decrement();
+    } );
+  } );
+}
+
+// Tidestorm Codex =======================================================
+
+void items::tidestorm_codex( special_effect_t& effect )
+{
+  struct surging_burst_t : public aoe_proc_t
+  {
+    surging_burst_t( const special_effect_t& effect ) :
+      aoe_proc_t( effect, "surging_burst", 288086, true )
+    {
+      // Damage values are in a different spell, which isn't linked from the driver.
+      base_dd_min = base_dd_max = player->find_spell( 288046 )->effectN( 1 ).average( effect.item );
+
+      // Travel speed is around 10 yd/s, doesn't seem to be in spell data.
+      travel_speed = 10.0;
+    }
+  };
+
+  struct surging_waters_t : public proc_t
+  {
+    action_t* damage;
+
+    surging_waters_t( const special_effect_t& effect ) :
+      proc_t( effect, "surging_waters", effect.driver() )
+    {
+      channeled = true;
+
+      if ( player->bugs )
+      {
+        // The channel can actually be cancelled early while still getting all six elementals.
+        // Here we model that by reducing the channel to 1.5 sec if bugs are enabled.
+        dot_duration = 1.5_s;
+      }
+
+      damage = create_proc_action<surging_burst_t>( "surging_burst", effect );
+      add_child( damage );
+    }
+
+    double composite_haste() const override
+    {
+      // Does not benefit from haste.
+      return 1.0;
+    }
+
+    void execute() override
+    {
+      proc_t::execute();
+
+      // This action is a background channel. use_item_t has already scheduled player ready event,
+      // so we need to remove it to prevent the player from channeling and doing something else at
+      // the same time.
+      event_t::cancel( player->readying );
+    }
+
+    void tick( dot_t* d ) override
+    {
+      proc_t::tick( d );
+      // Spawn up to six elementals, see the bug note above.
+      if ( d->current_tick <= as<int>( data().effectN( 3 ).base_value() ) )
+      {
+        damage->set_target( d->target );
+        damage->execute();
+      }
+    }
+
+    void last_tick( dot_t* d ) override
+    {
+      bool was_channeling = player->channeling == this;
+      proc_t::last_tick( d );
+
+      if ( was_channeling && !player->readying )
+      {
+        // Since this is a background channel, we need to manually wake
+        // the player up.
+
+        timespan_t wait = 0_ms;
+        if ( !player->bugs )
+        {
+          // Without bugs, we assume that the full channel needs to happen to get
+          // all six elementals. This means we need take into account channel lag.
+          wait = rng().gauss( sim->channel_lag, sim->channel_lag_stddev );
+        }
+        // With bugs, the interrupt window is huge and the interrupt can even be
+        // done with the help of spellqueueing, so no delay is added.
+
+        player->schedule_ready( wait );
+      }
+    }
+  };
+
+  effect.execute_action = create_proc_action<surging_waters_t>( "surging_waters", effect );
+}
+
+// Invocation of Yu'lon ==================================================
+
+void items::invocation_of_yulon( special_effect_t& effect )
+{
+  effect.execute_action = create_proc_action<aoe_proc_t>( "yulons_fury", effect,
+    "yulons_fury", 288282, true );
+  effect.execute_action->travel_speed = effect.driver()->missile_speed();
+}
+
+// Variable Intensity Gigavolt Oscillating Reactor =======================
+
+struct vigor_engaged_t : public special_effect_t
+{
+  // Phases of the buff
+  enum oscillation : unsigned
+  {
+    ASCENDING = 0u,     // Ascending towards max stack
+    MAX_STACK,          // Coasting at max stack
+    DESCENDING,         // Descending towards zero stack
+    INACTIVE,           // Hibernating at zero stack
+    MAX_STATES
+  };
+
+  oscillation current_oscillation = oscillation::ASCENDING;
+  unsigned ticks_at_oscillation = 0u;
+  std::array<unsigned, oscillation::MAX_STATES> max_ticks;
+  std::array<oscillation, oscillation::MAX_STATES> transition_map = {
+    { MAX_STACK, DESCENDING, INACTIVE, ASCENDING }
+  };
+
+  event_t* tick_event     = nullptr;
+  stat_buff_t* vigor_buff = nullptr;
+  buff_t* cooldown_buff   = nullptr;
+
+  // Oscillation overload stuff
+  const spell_data_t* overload_spell = nullptr;
+  cooldown_t*         overload_cd    = nullptr;
+  buff_t*             overload_buff  = nullptr;
+
+  static std::string oscillation_str( oscillation s )
+  {
+    switch ( s )
+    {
+      case oscillation::ASCENDING:  return "ascending";
+      case oscillation::DESCENDING: return "descending";
+      case oscillation::MAX_STACK:  return "max_stack";
+      case oscillation::INACTIVE:   return "inactive";
+      default:                      return "unknown";
+    }
+  }
+
+  vigor_engaged_t( const special_effect_t& effect ) : special_effect_t( effect )
+  {
+    // Initialize max oscillations from spell data, buff-adjusting phases are -1 ticks, since the
+    // transition event itself adjusts the buff stack count by one (up or down)
+    max_ticks[ ASCENDING ] = max_ticks[ DESCENDING ] = driver()->effectN( 2 ).base_value() - 1;
+    max_ticks[ MAX_STACK ] = max_ticks[ INACTIVE ] = driver()->effectN( 3 ).base_value();
+
+    vigor_buff = ::create_buff<stat_buff_t>( effect.player, "vigor_engaged",
+        effect.player->find_spell( 287916 ), effect.item );
+    vigor_buff->add_stat( STAT_CRIT_RATING, driver()->effectN( 1 ).average( effect.item ) );
+
+    cooldown_buff = ::create_buff<buff_t>( effect.player, "vigor_cooldown",
+        effect.player->find_spell( 287967 ), effect.item );
+
+    // Overload
+    overload_spell = effect.player->find_spell( 287917 );
+    overload_cd = effect.player->get_cooldown( "oscillating_overload_" + ::util::to_string( overload_spell->id() ) );
+
+    effect.player->callbacks_on_arise.push_back( [ this ]() {
+      reset_oscillation();
+
+      if ( !player->sim->bfa_opts.randomize_oscillation )
+      {
+        do_oscillation_transition();
+      }
+      // If we are randomizing the initial oscillation, don't do any oscillation transition on arise
+      else
+      {
+        randomize_oscillation();
+      }
+    } );
+  }
+
+  void extend_oscillation( const timespan_t& by_seconds )
+  {
+    if ( player->sim->debug )
+    {
+      player->sim->out_debug.print( "{} {} oscillation overload, remains={}, new_remains={}",
+        player->name(), name(), tick_event->remains(),
+        tick_event->remains() + by_seconds );
+    }
+
+    tick_event->reschedule( tick_event->remains() + by_seconds );
+  }
+
+  // Perform automatic overload at MAX_STACK transition
+  void auto_overload( oscillation new_state )
+  {
+    if ( !player->sim->bfa_opts.auto_oscillating_overload )
+    {
+      return;
+    }
+
+    if ( new_state != oscillation::MAX_STACK )
+    {
+      return;
+    }
+
+    if ( !overload_cd->up() )
+    {
+      return;
+    }
+
+    // The overload buff is going to be created by the special effect code, so find and cache
+    // the pointer here to avoid init issues
+    if ( !overload_buff )
+    {
+      overload_buff = buff_t::find( player, "oscillating_overload" );
+      assert( overload_buff );
+    }
+
+    // Put on-use effects on cooldown
+    overload_cd->start( overload_spell->cooldown() );
+    overload_buff->trigger();
+  }
+
+  void oscillate()
+  {
+    ticks_at_oscillation++;
+    do_oscillation_transition();
+  }
+
+  void transition_to( oscillation new_oscillation )
+  {
+    if ( player->sim->debug )
+    {
+      player->sim->out_debug.print( "{} {} transition from {} to {}",
+        player->name(), name(), oscillation_str( current_oscillation ),
+        oscillation_str( new_oscillation ) );
+    }
+
+    current_oscillation = new_oscillation;
+    ticks_at_oscillation = 0u;
+  }
+
+  void do_oscillation_transition()
+  {
+    if ( player->sim->debug )
+    {
+      player->sim->out_debug.print( "{} {} oscillation at {}, ticks={}, max_ticks={}",
+        player->name(), name(), oscillation_str( current_oscillation ), ticks_at_oscillation,
+        max_ticks[ current_oscillation ] );
+    }
+
+    auto at_max_stack = ticks_at_oscillation == max_ticks[ current_oscillation ];
+    switch ( current_oscillation )
+    {
+      case oscillation::ASCENDING:
+      case oscillation::DESCENDING:
+        vigor_buff->trigger();
+        if ( !vigor_buff->check() )
+        {
+          cooldown_buff->trigger();
+        }
+        break;
+      case oscillation::INACTIVE:
+      case oscillation::MAX_STACK:
+        if ( at_max_stack )
+        {
+          vigor_buff->reverse = !vigor_buff->reverse;
+          vigor_buff->trigger();
+        }
+        break;
+      default:
+        break;
+    }
+
+    tick_event = make_event( player->sim, driver()->effectN( 1 ).period(),
+      [ this ]() { oscillate(); } );
+
+    if ( at_max_stack )
+    {
+      auto_overload( transition_map[ current_oscillation ] );
+      transition_to( transition_map[ current_oscillation ] );
+    }
+  }
+
+  // Randomize oscillation state to any of the four states, and any time inside the phase
+  void randomize_oscillation()
+  {
+    oscillation phase = static_cast<oscillation>( static_cast<unsigned>( player->rng().range(
+        oscillation::ASCENDING, oscillation::MAX_STATES ) ) );
+    double used_time = player->rng().range( 0, max_ticks[ phase ] *
+        driver()->effectN( 1 ).period().total_seconds() );
+    int ticks = used_time / driver()->effectN( 1 ).period().total_seconds();
+    double elapsed_tick_time = used_time - ticks * driver()->effectN( 1 ).period().total_seconds();
+    double time_to_next_tick = driver()->effectN( 1 ).period().total_seconds() - elapsed_tick_time;
+
+    if ( player->sim->debug )
+    {
+      player->sim->out_debug.print( "{} {} randomized oscillation, oscillation={}, used_time={}, "
+                                    "ticks={}, next_tick_in={}, phase_left={}",
+        player->name(), name(), oscillation_str( phase ), used_time, ticks, time_to_next_tick,
+        max_ticks[ phase ] * driver()->effectN( 1 ).period() - timespan_t::from_seconds( used_time ) );
+    }
+
+    switch ( phase )
+    {
+      case oscillation::ASCENDING:
+        vigor_buff->trigger( 1 + ticks );
+        break;
+      case oscillation::DESCENDING:
+        vigor_buff->trigger( vigor_buff->max_stack() - ( 1 + ticks ) );
+        vigor_buff->reverse = true;
+        break;
+      case oscillation::MAX_STACK:
+        vigor_buff->trigger( vigor_buff->max_stack() );
+        break;
+      case oscillation::INACTIVE:
+        vigor_buff->reverse = true;
+        cooldown_buff->trigger( 1, buff_t::DEFAULT_VALUE(), -1.0,
+          max_ticks[ phase ] * driver()->effectN( 1 ).period() - timespan_t::from_seconds( used_time ) );
+        break;
+      default:
+        break;
+    }
+
+    current_oscillation = phase;
+    ticks_at_oscillation = as<unsigned>( ticks );
+    tick_event = make_event( player->sim, timespan_t::from_seconds( time_to_next_tick ),
+      [ this ]() { oscillate(); } );
+  }
+
+  void reset_oscillation()
+  {
+    transition_to( oscillation::ASCENDING );
+    vigor_buff->reverse = false;
+  }
+};
+
+void items::variable_intensity_gigavolt_oscillating_reactor( special_effect_t& e )
+{
+  // Ensure the sim don't do stupid things if someone thinks it wise to try initializing 2 of these
+  // trinkets on a single actor
+  auto it = range::find_if( e.player->special_effects, [&e]( const special_effect_t* effect ) {
+    return e.spell_id == effect->spell_id;
+  } );
+
+  if ( it == e.player->special_effects.end() )
+  {
+    e.player->special_effects.push_back( new vigor_engaged_t( e ) );
+    e.type = SPECIAL_EFFECT_NONE;
+  }
+}
+
+void items::variable_intensity_gigavolt_oscillating_reactor_onuse( special_effect_t& effect )
+{
+  struct oscillating_overload_t : public buff_t
+  {
+    vigor_engaged_t* driver;
+
+    oscillating_overload_t( player_t* p, const std::string& name, const spell_data_t* spell, const item_t* item ) :
+      buff_t( p, name, spell, item ), driver( nullptr )
+    { }
+
+    void execute( int stacks, double value, timespan_t duration ) override
+    {
+      buff_t::execute( stacks, value, duration );
+
+      // Find the special effect for the on-equip on first execute of the on-use effect. Otherwise
+      // we run into init issues.
+      if ( !driver )
+      {
+        auto it = range::find_if( player->special_effects, []( special_effect_t* effect ) {
+          return effect->spell_id == 287915;
+        } );
+
+        assert( it != player->special_effects.end() );
+        driver = static_cast<vigor_engaged_t*>( *it );
+      }
+
+      driver->extend_oscillation( data().duration() );
+    }
+  };
+
+  // Implement an additional level of indirection so we can control when the overload use-item can
+  // be triggered. This is necessary for a few reasons:
+  // 1) The on-use will not work if the actor is cooling down (has the Vigor Cooldown buff)
+  // 2) The on-use can not be used, if bfa.auto_oscillating_overload option is used
+  struct oscillating_overload_action_t : public action_t
+  {
+    oscillating_overload_t* buff;
+    buff_t* cooldown_buff;
+
+    oscillating_overload_action_t( const special_effect_t& effect ) :
+      action_t( ACTION_OTHER, "oscillating_overload_driver", effect.player, effect.driver() ),
+      buff( create_buff<oscillating_overload_t>( effect.player, "oscillating_overload",
+            effect.driver(), effect.item ) ),
+      cooldown_buff( create_buff<buff_t>( effect.player, "vigor_cooldown",
+        effect.player->find_spell( 287967 ), effect.item ) )
+    {
+      background = quiet = true;
+      callbacks = false;
+    }
+
+    result_e calculate_result( action_state_t* /* state */ ) const override
+    { return RESULT_HIT; }
+
+    void execute() override
+    {
+      action_t::execute();
+
+      buff->trigger();
+    }
+
+    bool ready() override
+    {
+      if ( sim->bfa_opts.auto_oscillating_overload )
+      {
+        return false;
+      }
+
+      // Overload on-use is not available if the cooldown buff is up
+      if ( cooldown_buff->check() )
+      {
+        return false;
+      }
+
+      return action_t::ready();
+    }
+  };
+
+  effect.execute_action = new oscillating_overload_action_t( effect );
+}
+
+// Everchill Anchor
+
+struct everchill_anchor_constructor_t : public item_targetdata_initializer_t
+{
+  everchill_anchor_constructor_t( unsigned iid, const std::vector< slot_e >& s ) :
+    item_targetdata_initializer_t( iid, s )
+  {}
+
+  // Create the everchill debuff to handle trinket icd
+  void operator()( actor_target_data_t* td ) const override
+  {
+    const special_effect_t* effect = find_effect( td -> source );
+    if ( !effect )
+    {
+      td -> debuff.everchill = make_buff( *td, "everchill" );
+      return;
+    }
+    assert( !td -> debuff.everchill );
+
+    td -> debuff.everchill =
+      make_buff( *td, "everchill_debuff", effect -> trigger() )
+      -> set_activated( false );
+    td -> debuff.everchill -> reset();
+  }
+};
+
+void items::everchill_anchor( special_effect_t& effect )
+{
+  struct everchill_t : public proc_spell_t
+  {
+    everchill_t( const special_effect_t& effect ):
+      proc_spell_t( "everchill", effect.player, effect.player -> find_spell( 289526 ), effect.item )
+    { }
+  };
+
+  struct everchill_anchor_cb_t : public dbc_proc_callback_t
+  {
+    everchill_t* damage;
+    everchill_anchor_cb_t( const special_effect_t& effect ) :
+      dbc_proc_callback_t( effect.item, effect ),
+      damage( new everchill_t( effect ) )
+    {}
+
+    void execute( action_t* /* a */, action_state_t* state ) override
+    {
+      actor_target_data_t* td = listener -> get_target_data( state -> target );
+      assert( td );
+
+      if ( td -> debuff.everchill -> trigger() )
+      {
+        // The dot doesn't tick when it's refreshed but ticks when it's applied
+        // So we set tick_zero to false if it's a refresh, execute the dot, then set it back to true
+        // Hacky but at least it works
+        dot_t* current_dot = damage -> find_dot( state -> target );
+        bool already_ticking = current_dot ? current_dot -> is_ticking() : false;
+        if ( already_ticking )
+        {
+          damage -> tick_zero = false;
+        }
+        damage -> set_target( state -> target );
+        damage -> execute();
+        if ( already_ticking )
+        {
+          damage -> tick_zero = true;
+        }
+      }
+    }
+  };
+
+  // An aoe ability will apply the dot on every target hit
+  effect.proc_flags2_ = PF2_ALL_HIT;
+  // Internal cd is handled on the debuff
+  effect.cooldown_ = timespan_t::zero();
+
+  new everchill_anchor_cb_t( effect );
+}
+
+// Ramping Amplitude Gigavolt Engine ======================================
+
+void items::ramping_amplitude_gigavolt_engine( special_effect_t& effect )
+{
+  struct ramping_amplitude_event_t : event_t
+  {
+    buff_t* rage_buff;
+    player_t* p;
+    timespan_t prev_interval;
+
+    ramping_amplitude_event_t( player_t* player, buff_t* buff, timespan_t interval ) :
+      event_t( *player, interval ), rage_buff( buff ), p( player ), prev_interval( interval )
+    { }
+
+    void execute() override
+    {
+      if ( rage_buff -> check() && rage_buff -> check() < rage_buff -> max_stack() )
+      {
+        rage_buff -> increment();
+        make_event<ramping_amplitude_event_t>( sim(), p, rage_buff, prev_interval * 0.8 );
+      }
+    }
+  };
+
+  struct ramping_amplitude_gigavolt_engine_active_t : proc_spell_t
+  {
+    buff_t* rage_buff;
+
+    ramping_amplitude_gigavolt_engine_active_t( special_effect_t& effect ) :
+      proc_spell_t( "ramping_amplitude_gigavolt_engine_active", effect.player, effect.driver(), effect.item )
+    {
+      rage_buff = make_buff<stat_buff_t>( effect.player, "r_a_g_e", effect.player -> find_spell( 288156 ), effect.item );
+      rage_buff -> set_refresh_behavior( buff_refresh_behavior::DISABLED );
+      rage_buff -> cooldown = this -> cooldown;
+    }
+
+    void execute() override
+    {
+      rage_buff -> trigger();
+      make_event<ramping_amplitude_event_t>( *sim, player, rage_buff, timespan_t::from_seconds( 2.0 ) );
+    }
+  };
+
+  effect.disable_buff();
+  
+  effect.execute_action = new ramping_amplitude_gigavolt_engine_active_t( effect );
+}
+
+// Grong's Primal Rage 
+
+void items::grongs_primal_rage( special_effect_t& effect )
+{
+  struct primal_rage_channel : public proc_spell_t
+  {
+    primal_rage_channel( const special_effect_t& effect ) :
+      proc_spell_t( "primal_rage", effect.player, effect.player -> find_spell( 288267 ), effect.item )
+    { 
+      channeled = hasted_ticks = true;
+      interrupt_auto_attack = tick_zero = false;
+
+      tick_action = create_proc_action<aoe_proc_t>( "primal_rage_damage", effect,
+                                               "primal_rage_damage", effect.player -> find_spell( 288269 ), true );
+    }
+
+    // Even though ticks are hasted, the duration is a fixed 4s
+    timespan_t composite_dot_duration( const action_state_t* state ) const override
+    {
+      return dot_duration;
+    }
+
+    // Copied from draught of souls
+    void execute() override
+    {
+      proc_spell_t::execute();
+
+      // Use_item_t (that executes this action) will trigger a player-ready event after execution.
+      // Since this action is a "background channel", we'll need to cancel the player ready event to
+      // prevent the player from picking something to do while channeling.
+      event_t::cancel( player -> readying );
+    }
+
+    void last_tick( dot_t* d ) override
+    {
+      // Last_tick() will zero player_t::channeling if this action is being channeled, so check it
+      // before calling the parent.
+      auto was_channeling = player -> channeling == this;
+
+      proc_spell_t::last_tick( d );
+
+      // Since Draught of Souls must be modeled as a channel (player cannot be allowed to perform
+      // any actions for 3 seconds), we need to manually restart the player-ready event immediately
+      // after the channel ends. This is because the channel is flagged as a background action,
+      // which by default prohibits player-ready generation.
+      if ( was_channeling && player -> readying == nullptr )
+      {
+        // Due to the client not allowing the ability queue here, we have to wait
+        // the amount of lag + how often the key is spammed until the next ability is used.
+        // Modeling this as 2 * lag for now. Might increase to 3 * lag after looking at logs of people using the trinket.
+        timespan_t time = ( player -> world_lag_override ? player -> world_lag : sim -> world_lag ) * 2.0;
+        player -> schedule_ready( time );
+      }
+    }
+  };
+
+  effect.execute_action = new primal_rage_channel( effect );
+}
+
+// Waycrest's Legacy Set Bonus ============================================
 
 void set_bonus::waycrest_legacy( special_effect_t& effect )
 {
@@ -1652,6 +2315,28 @@ void set_bonus::waycrest_legacy( special_effect_t& effect )
   {
     effect_damage -> execute_action->add_child( new waycrest_legacy_damage_t( effect ) );
   }
+}
+
+// Gift of the Loa Set Bonus ==============================================
+
+void set_bonus::gift_of_the_loa( special_effect_t& effect )
+{
+  auto p = effect.player;
+
+  // Set bonus is only active in Zuldazar
+  if ( p->sim->bfa_opts.zuldazar )
+  {
+    // The values are stored in a different spell.
+    double value = p->find_spell( 290264 )->effectN( 1 ).average( p );
+    p->passive.add_stat( p->convert_hybrid_stat( STAT_STR_AGI_INT ), value );
+  }
+}
+
+// Keepsakes of the Resolute Commandant Set Bonus =========================
+
+void set_bonus::keepsakes_of_the_resolute_commandant( special_effect_t& effect )
+{
+  new dbc_proc_callback_t( effect.player, effect );
 }
 
 } // namespace bfa
@@ -1719,6 +2404,15 @@ void unique_gear::register_special_effects_bfa()
   register_special_effect( 278152, items::disc_of_systematic_regression );
   register_special_effect( 274472, items::berserkers_juju );
   register_special_effect( 285495, "285496Trigger" ); // Moonstone of Zin-Azshari
+  register_special_effect( 289522, items::incandescent_sliver );
+  register_special_effect( 289885, items::tidestorm_codex );
+  register_special_effect( 289521, items::invocation_of_yulon );
+  register_special_effect( 288328, "288330Trigger" ); // Kimbul's Razor Claw
+  register_special_effect( 287915, items::variable_intensity_gigavolt_oscillating_reactor );
+  register_special_effect( 287917, items::variable_intensity_gigavolt_oscillating_reactor_onuse );
+  register_special_effect( 289525, items::everchill_anchor );
+  register_special_effect( 288173, items::ramping_amplitude_gigavolt_engine );
+  register_special_effect( 289520, items::grongs_primal_rage );
 
   // Misc
   register_special_effect( 276123, items::darkmoon_deck_squalls );
@@ -1727,6 +2421,10 @@ void unique_gear::register_special_effects_bfa()
 
   /* 8.0 Dungeon Set Bonuses*/
   register_special_effect( 277522, set_bonus::waycrest_legacy );
+
+  /* 8.1.0 Raid Set Bonuses */
+  register_special_effect( 290263, set_bonus::gift_of_the_loa );
+  register_special_effect( 290362, set_bonus::keepsakes_of_the_resolute_commandant );
 }
 
 void unique_gear::register_target_data_initializers_bfa( sim_t* sim )
@@ -1736,6 +2434,7 @@ void unique_gear::register_target_data_initializers_bfa( sim_t* sim )
 
   sim -> register_target_data_initializer( deadeye_spyglass_constructor_t( 159623, items ) );
   sim -> register_target_data_initializer( syringe_of_bloodborne_infirmity_constructor_t( 160655, items ) );
+  sim -> register_target_data_initializer( everchill_anchor_constructor_t( 165570, items ) );
 }
 
 namespace expansion

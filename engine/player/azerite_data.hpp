@@ -161,7 +161,7 @@ void register_azerite_target_data_initializers( sim_t* );
 
 /// Compute the <min, avg, max> value of the spell effect given, based on the azerite power
 std::tuple<int, int, int> compute_value( const azerite_power_t& power,
-    const spelleffect_data_t* effect );
+    const spelleffect_data_t& effect );
 
 /// Parse azerite item information from the Blizzard Community API JSON output
 void parse_blizzard_azerite_information( item_t& item, const rapidjson::Value& data );
@@ -171,8 +171,8 @@ namespace special_effects
 void resounding_protection( special_effect_t& effect );
 void elemental_whirl( special_effect_t& effect );
 void blood_siphon( special_effect_t& effect );
-void lifespeed(special_effect_t& effect);
-void on_my_way(special_effect_t& effect);
+void lifespeed( special_effect_t& effect );
+void on_my_way( special_effect_t& effect );
 void champion_of_azeroth( special_effect_t& effect );
 void unstable_flames( special_effect_t& );
 void thunderous_blast( special_effect_t& );
@@ -205,6 +205,12 @@ void synaptic_spark_capacitor( special_effect_t& );
 void ricocheting_inflatable_pyrosaw( special_effect_t& );
 void gutripper( special_effect_t& );
 void battlefield_focus_precision( special_effect_t& );
+void endless_hunger( special_effect_t& effect );
+void apothecarys_concoctions( special_effect_t& effect );
+void shadow_of_elune( special_effect_t& effect );
+void treacherous_covenant( special_effect_t& effect );
+void seductive_power( special_effect_t& effect );
+void bonded_souls( special_effect_t& effect );
 } // Namespace special_effects ends
 
 } // Namespace azerite ends

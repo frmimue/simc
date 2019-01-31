@@ -764,9 +764,9 @@ enum slot_e  // these enum values match armory settings
   SLOT_MIN       = 0
 };
 
-// Tiers 13..22 + PVP
+// Tiers 14..22 + PVP
 const unsigned N_TIER   = 10;
-const unsigned MIN_TIER = 13;
+const unsigned MIN_TIER = 14;
 
 // Set bonus .. bonus. They map to a vector internally, so each enum value is just the vector
 // element index.
@@ -810,6 +810,8 @@ enum set_bonus_type_e
   T20,
   T21,
   T21P_G1,
+  T23_GIFT_OF_THE_LOA,
+  T23_KEEPSAKES,
 
   SET_BONUS_MAX
 };

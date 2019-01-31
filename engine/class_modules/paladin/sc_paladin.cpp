@@ -54,6 +54,7 @@ paladin_t::paladin_t( sim_t* sim, const std::string& name, race_e r ) :
   cooldowns.divine_hammer             = get_cooldown( "divine_hammer" );
   cooldowns.holy_shock                = get_cooldown( "holy_shock");
   cooldowns.light_of_dawn             = get_cooldown( "light_of_dawn");
+  cooldowns.consecration              = get_cooldown( "consecration" );
 
   cooldowns.inner_light               = get_cooldown( "inner_light" );
 
@@ -100,16 +101,6 @@ paladin_td_t* paladin_t::get_target_data( player_t* target ) const
 // anywhere are also put here. There's a second buffs section near the end
 // containing ones that require action_t definitions to function properly.
 namespace buffs {
-  liadrins_fury_unleashed_t::liadrins_fury_unleashed_t( player_t* p ) :
-      buff_t( p, "liadrins_fury_unleashed", p -> find_spell( 208410 ) )
-  {
-    set_tick_zero( true );
-    set_tick_callback( [ this, p ]( buff_t*, int, const timespan_t& ) {
-      paladin_t* paladin = debug_cast<paladin_t*>( p );
-      paladin -> resource_gain( RESOURCE_HOLY_POWER, data().effectN( 1 ).base_value(), paladin -> gains.hp_liadrins_fury_unleashed );
-    } );
-  }
-
   avenging_wrath_buff_t::avenging_wrath_buff_t( player_t* p ) :
       buff_t( p, "avenging_wrath", p -> find_spell( 31884 ) ),
       damage_modifier( 0.0 ),
@@ -205,7 +196,7 @@ struct avenging_wrath_t : public paladin_spell_t
     p() -> buffs.avenging_wrath -> trigger();
 
     if ( p() -> azerite.avengers_might.ok() )
-      p() -> buffs.avengers_might -> trigger();
+      p() -> buffs.avengers_might -> trigger( 1, p() -> buffs.avengers_might -> default_value, -1.0, p() -> buffs.avenging_wrath -> buff_duration );
   }
 
   // TODO: is this needed? Question for Ret dev, since I don't think it is for Prot/Holy
@@ -236,6 +227,8 @@ struct consecration_tick_t: public paladin_spell_t {
 struct consecration_t : public paladin_spell_t
 {
   consecration_tick_t* damage_tick;
+  ground_aoe_params_t cons_params;
+  bool precombat;
 
   consecration_t( paladin_t* p, const std::string& options_str )
     : paladin_spell_t( "consecration", p, p -> specialization() == PALADIN_RETRIBUTION ? p -> talents.consecration : p -> find_specialization_spell( "Consecration" ) ),
@@ -245,13 +238,44 @@ struct consecration_t : public paladin_spell_t
 
     dot_duration = timespan_t::zero(); // the periodic event is handled by ground_aoe_event_t
     may_miss       = false;
+    harmful = false;
 
     add_child( damage_tick );
   }
 
+  void init_finished() override
+  {
+    paladin_spell_t::init_finished();
+
+    precombat = action_list -> name_str == "precombat";
+
+    timespan_t cons_duration = data().duration();
+    if ( precombat )
+    {
+      cons_duration -= timespan_t::from_seconds( 3.0 );
+    }
+
+    cons_params = ground_aoe_params_t()
+      // Lasts 3 less seconds if used during precombat, see execute()
+      .duration( cons_duration )
+      .hasted( ground_aoe_params_t::SPELL_HASTE )
+      .action( damage_tick )
+      .state_callback( [ this ]( ground_aoe_params_t::state_type type, ground_aoe_event_t* event ) {
+      switch ( type )
+      {
+      case ground_aoe_params_t::EVENT_CREATED:
+        p() -> active_consecration = event;
+        break;
+      case ground_aoe_params_t::EVENT_DESTRUCTED:
+        p() -> active_consecration = nullptr;
+        break;
+      default:
+        break;
+      } } ) ;
+  }
+
   void execute() override
   {
-
     // Cancel the current consecration if it exists
     if ( p() -> active_consecration != nullptr )
     {
@@ -260,30 +284,35 @@ struct consecration_t : public paladin_spell_t
 
     paladin_spell_t::execute();
 
-    // create a new ground aoe event
-    make_event<ground_aoe_event_t>( *sim, p(), ground_aoe_params_t()
-      .target( execute_state -> target )
-      // spawn at feet of player
-      .x( execute_state -> action -> player -> x_position )
-      .y( execute_state -> action -> player -> y_position )
-      .duration( data().duration() )
-      .start_time( sim -> current_time() )
-      .hasted( ground_aoe_params_t::SPELL_HASTE )
-      .action( damage_tick )
-      .state_callback( [ this ]( ground_aoe_params_t::state_type type, ground_aoe_event_t* event ) {
-        switch ( type )
-        {
-          case ground_aoe_params_t::EVENT_CREATED:
-            p() -> active_consecration = event;
-            break;
-          case ground_aoe_params_t::EVENT_DESTRUCTED:
-            p() -> active_consecration = nullptr;
-            break;
-          default:
-            break;
-        }
-      } ), true /* Immediate pulse */ );
+    // Some parameters need to be updated on each cast
+    cons_params.target( execute_state -> target )
+               .start_time( sim -> current_time() );
+
+    if ( sim -> distance_targeting_enabled )
+    {
+      cons_params.x( p() -> x_position )
+                 .y( p() -> y_position );
     }
+
+    // Consecration's duration is reduced by 3s if it is used during precombat
+    // Emulates the player putting down consecration in a distance 2s before combat starts
+    // And pulling the boss into it roughly 1s after combat starts
+    if ( precombat )
+    {
+      p() -> cooldowns.consecration -> adjust( timespan_t::from_seconds( -2.0 ) );
+
+      // Create an event that starts consecration's aoe one second after combat starts
+      make_event( *sim, timespan_t::from_seconds( 1.0 ), [ this ]( ) 
+      {
+        make_event<ground_aoe_event_t>( *sim, p(), cons_params, true /* Immediate pulse */ );
+      });
+    }
+
+    else 
+    {
+      make_event<ground_aoe_event_t>( *sim, p(), cons_params, true /* Immediate pulse */ );
+    }
+  }
 };
 
 // Divine Shield ==============================================================
@@ -538,6 +567,17 @@ struct melee_t : public paladin_melee_attack_t
     trigger_gcd           = timespan_t::zero();
     base_execute_time     = p -> main_hand_weapon.swing_time;
     weapon_multiplier     = 1.0;
+  }
+
+  void init() override
+  {
+    paladin_melee_attack_t::init();
+
+    // These whitelisted effects also increase auto attack damage
+    last_defender_increase = avenging_wrath = ret_crusade = true;
+    
+    // Bug? Inquisition doesn't increase aa damage
+    ret_inquisition = false;
   }
 
   virtual timespan_t execute_time() const override
@@ -1107,11 +1147,7 @@ void paladin_t::init_gains()
 
   // Holy Power
   gains.hp_templars_verdict_refund  = get_gain( "templars_verdict_refund" );
-  gains.hp_liadrins_fury_unleashed  = get_gain( "liadrins_fury_unleashed" );
   gains.judgment                    = get_gain( "judgment" );
-  gains.hp_t19_4p                   = get_gain( "t19_4p" );
-  gains.hp_t20_2p                   = get_gain( "t20_2p" );
-  gains.hp_justice_gaze             = get_gain( "justice_gaze" );
   gains.hp_cs                       = get_gain( "crusader_strike" );
 }
 
@@ -1125,7 +1161,6 @@ void paladin_t::init_procs()
   procs.focus_of_vengeance_reset  = get_proc( "focus_of_vengeance_reset"       );
   procs.divine_purpose            = get_proc( "divine_purpose"                 );
   procs.the_fires_of_justice      = get_proc( "the_fires_of_justice"           );
-  procs.tfoj_set_bonus            = get_proc( "t19_4p"                         );
   procs.art_of_war                = get_proc( "art_of_war"                     );
   procs.topless_tower             = get_proc( "topless_tower"                  );
   procs.grand_crusader            = get_proc( "grand_crusader"                 );
@@ -1175,13 +1210,16 @@ void paladin_t::create_buffs()
                                  ->set_cooldown( timespan_t::zero() ) // Let the ability handle the CD
                                  ->add_invalidate( CACHE_PLAYER_DAMAGE_MULTIPLIER );
   buffs.divine_purpose                 = make_buff( this, "divine_purpose", specialization() == PALADIN_HOLY ? find_spell( 197646 ) : find_spell( 223819 ) );
+  // Avenger's Might's duration is affected by Light's Decree increasing AW's duration by 5s
+  buffs.avengers_might = make_buff<stat_buff_t>( this, "avengers_might", azerite.avengers_might.spell() -> effectN( 1 ).trigger() -> effectN( 1 ).trigger() )
+    -> add_stat( STAT_MASTERY_RATING, azerite.avengers_might.value() );
 }
 
 // paladin_t::default_potion ================================================
 
 std::string paladin_t::default_potion() const
 {
-  std::string retribution_pot = (true_level > 110) ? "bursting_blood" :
+  std::string retribution_pot = (true_level > 110) ? "battle_potion_of_strength" :
                                 (true_level > 100) ? "old_war" :
                                 (true_level >= 90) ? "draenic_strength" :
                                 (true_level >= 85) ? "mogu_power" :
@@ -1189,7 +1227,7 @@ std::string paladin_t::default_potion() const
                                 "disabled";
 
   bool dps = (primary_role() == ROLE_ATTACK) || (talents.seraphim -> ok());
-  std::string protection_pot = (true_level > 110) ? "bursting_blood" :
+  std::string protection_pot = (true_level > 110) ? "battle_potion_of_strength" :
                                (true_level > 100) ? ( dps ? "prolonged_power" : "unbending_potion" ) :
                                (true_level >= 90) ? "draenic_strength" :
                                (true_level >= 85) ? "mogu_power" :
@@ -1810,9 +1848,14 @@ void paladin_t::invalidate_cache( cache_e c )
     player_t::invalidate_cache( CACHE_SPELL_POWER );
   }
 
-  if ( c == CACHE_ATTACK_CRIT_CHANCE && specialization() == PALADIN_PROTECTION )
-    player_t::invalidate_cache( CACHE_PARRY );
+  if ( specialization() == PALADIN_HOLY && 
+    ( c == CACHE_INTELLECT || c == CACHE_SPELL_POWER ) )
+  {
+    player_t::invalidate_cache( CACHE_ATTACK_POWER );
+  }
 
+  if ( c == CACHE_ATTACK_CRIT_CHANCE && passives.riposte -> ok() )
+    player_t::invalidate_cache( CACHE_PARRY );
 
   if ( c == CACHE_MASTERY && passives.divine_bulwark -> ok() )
   {
@@ -1821,7 +1864,7 @@ void paladin_t::invalidate_cache( cache_e c )
     player_t::invalidate_cache( CACHE_SPELL_POWER );
   }
 
-  if ( c == CACHE_STRENGTH && spells.shield_of_the_righteous -> ok() )
+  if ( c == CACHE_STRENGTH && spec.shield_of_the_righteous -> ok() )
   {
     player_t::invalidate_cache( CACHE_BONUS_ARMOR );
   }

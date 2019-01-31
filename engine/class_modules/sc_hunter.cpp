@@ -585,6 +585,7 @@ public:
   void      regen( timespan_t periodicity ) override;
   void      create_options() override;
   expr_t*   create_expression( const std::string& name ) override;
+  expr_t*     create_action_expression( action_t&, const std::string& name ) override;
   action_t* create_action( const std::string& name, const std::string& options ) override;
   pet_t*    create_pet( const std::string& name, const std::string& type = std::string() ) override;
   void      create_pets() override;
@@ -2120,13 +2121,13 @@ struct multi_shot_t: public hunter_ranged_attack_t
     {
       aoe = -1;
       base_dd_min = base_dd_max = p -> azerite.rapid_reload.value( 1 );
-      // TODO: check if it reduces aotw cd
     }
   };
 
   struct {
     rapid_reload_t* action = nullptr;
     int min_targets = std::numeric_limits<int>::max();
+    timespan_t reduction = 0_ms;
   } rapid_reload;
 
   multi_shot_t( hunter_t* p, const std::string& options_str ):
@@ -2139,6 +2140,7 @@ struct multi_shot_t: public hunter_ranged_attack_t
     {
       rapid_reload.action = p -> get_background_action<rapid_reload_t>( "multishot_rapid_reload" );
       rapid_reload.min_targets = as<int>(p -> azerite.rapid_reload.spell() -> effectN( 2 ).base_value());
+      rapid_reload.reduction = ( timespan_t::from_seconds( p -> azerite.rapid_reload.spell() -> effectN ( 3 ).base_value() ) );
       add_child( rapid_reload.action );
     }
   }
@@ -2185,6 +2187,7 @@ struct multi_shot_t: public hunter_ranged_attack_t
     if ( rapid_reload.action && num_targets_hit > rapid_reload.min_targets )
     {
       rapid_reload.action -> set_target( target );
+      p() -> cooldowns.aspect_of_the_wild -> adjust( - ( rapid_reload.reduction * num_targets_hit ) );
       rapid_reload.action -> execute();
     }
   }
@@ -3664,6 +3667,11 @@ struct kill_command_t: public hunter_spell_t
     {
       auto driver = p -> find_spell( 287097 );
       dire_consequences.rppm = p -> get_rppm( "dire_consequences", driver );
+      //Dire Consequences is currently bugged and has reduced procrate compared to what the spell data indicates.
+      //This is still the case as of 29/01/2019
+      //TODO: Follow up on this
+      dire_consequences.rppm -> set_modifier(
+        dire_consequences.rppm -> get_modifier() * 0.55); 
       dire_consequences.icd = p -> get_cooldown( "dire_consequences" );
       dire_consequences.icd -> duration = driver -> internal_cooldown();
       dire_consequences.proc = p -> get_proc( "Dire Consequences" );
@@ -4390,6 +4398,34 @@ void hunter_td_t::target_demise()
   damaged = false;
 }
 
+/**
+ * Hunter specific action expression
+ * 
+ * Use this function for expressions which are bound to an action property such as target, cast_time etc.
+ * If you need an expression tied to the player itself use the normal hunter_t::create_expression override. 
+ */
+expr_t* hunter_t::create_action_expression ( action_t& action, const std::string& expression_str )
+{
+  std::vector<std::string> splits = util::string_split( expression_str, "." );
+
+  //Careful Aim expression
+  if ( splits.size() == 1 && splits[ 0 ] == "ca_execute" )
+  {
+      return make_fn_expr( expression_str, [ this, &action ]
+      {
+        if ( !talents.careful_aim->ok() )
+          return false;
+          
+        if (action.target->health_percentage() > talents.careful_aim->effectN( 1 ).base_value() || action.target->health_percentage() < talents.careful_aim->effectN( 2 ).base_value())
+          return true;
+        else
+         return false;
+      } );
+  }
+
+  return player_t::create_action_expression( action, expression_str );
+}
+
 expr_t* hunter_t::create_expression( const std::string& expression_str )
 {
   std::vector<std::string> splits = util::string_split( expression_str, "." );
@@ -5084,9 +5120,7 @@ void hunter_t::init_action_list()
     precombat -> add_action( "augmentation" );
     precombat -> add_action( "food" );
 
-    if ( specialization() == HUNTER_MARKSMANSHIP )
-      precombat -> add_action( "summon_pet,if=active_enemies<3" );
-    else
+    if ( specialization() != HUNTER_MARKSMANSHIP )
       precombat -> add_action( "summon_pet" );
 
     precombat -> add_action( "snapshot_stats", "Snapshot raid buffed stats before combat begins and pre-potting is done." );
@@ -5138,6 +5172,9 @@ void hunter_t::apl_bm()
 {
   action_priority_list_t* default_list = get_action_priority_list( "default" );
   action_priority_list_t* precombat    = get_action_priority_list( "precombat" );
+  action_priority_list_t* cds          = get_action_priority_list( "cds" );
+  action_priority_list_t* st           = get_action_priority_list( "st" );
+  action_priority_list_t* cleave       = get_action_priority_list( "cleave" );
 
   // Precombat actions
   precombat -> add_action( this, "Aspect of the Wild", "precast_time=1.1,if=!azerite.primal_instincts.enabled",
@@ -5145,40 +5182,53 @@ void hunter_t::apl_bm()
   precombat -> add_action( this, "Bestial Wrath", "precast_time=1.5,if=azerite.primal_instincts.enabled",
           "Adjusts the duration and cooldown of Bestial Wrath and Haze of Rage by the duration of an unhasted GCD when they're used precombat." );
 
+  // Generic APL
   default_list -> add_action( "auto_shot" );
-
-  // Item Actions
   default_list -> add_action( "use_items" );
+  default_list -> add_action( "call_action_list,name=cds" );
+  default_list -> add_action( "call_action_list,name=st,if=active_enemies<2" );
+  default_list -> add_action( "call_action_list,name=cleave,if=active_enemies>1" );
+  // Arcane torrent if nothing else is available
+  default_list -> add_action( this, "Arcane Torrent" );
 
   // Racials
-  for ( std::string racial : { "berserking", "blood_fury", "ancestral_call", "fireblood" } )
-    default_list -> add_action( racial + ",if=cooldown.bestial_wrath.remains>30" );
+  for ( std::string racial : { "ancestral_call", "fireblood" } )
+    cds -> add_action( racial + ",if=cooldown.bestial_wrath.remains>30");
+
+  cds -> add_action("berserking,if=buff.aspect_of_the_wild.up&(target.time_to_die>cooldown.berserking.duration+duration|(target.health.pct<35|!talent.killer_instinct.enabled))|target.time_to_die<13"); 
+  cds -> add_action("blood_fury,if=buff.aspect_of_the_wild.up&(target.time_to_die>cooldown.blood_fury.duration+duration|(target.health.pct<35|!talent.killer_instinct.enabled))|target.time_to_die<16");
+  cds -> add_action("lights_judgment,if=pet.cat.buff.frenzy.up&pet.cat.buff.frenzy.remains>gcd.max|!pet.cat.buff.frenzy.up");
 
   // In-combat potion
-  default_list -> add_action( "potion,if=buff.bestial_wrath.up&buff.aspect_of_the_wild.up&(target.health.pct<35|!talent.killer_instinct.enabled)|target.time_to_die<25" );
+  cds -> add_action( "potion,if=buff.bestial_wrath.up&buff.aspect_of_the_wild.up&(target.health.pct<35|!talent.killer_instinct.enabled)|target.time_to_die<25" );
 
-  // Generic APL
-  default_list -> add_action( this, "Barbed Shot", "if=pet.cat.buff.frenzy.up&pet.cat.buff.frenzy.remains<=gcd.max|full_recharge_time<gcd.max&cooldown.bestial_wrath.remains" );
-  //Lightforged racial
-  default_list -> add_action( "lights_judgment" );
-  default_list -> add_talent( this, "Spitting Cobra" );
-  default_list -> add_action( this, "Aspect of the Wild" );
-  default_list -> add_talent( this, "A Murder of Crows", "if=active_enemies=1" );
-  default_list -> add_talent( this, "Stampede", "if=buff.aspect_of_the_wild.up&buff.bestial_wrath.up|target.time_to_die<15" );
-  default_list -> add_action( this, "Multi-Shot", "if=spell_targets>2&gcd.max-pet.cat.buff.beast_cleave.remains>0.25" );
-  default_list -> add_action( this, "Bestial Wrath", "if=cooldown.aspect_of_the_wild.remains>20|target.time_to_die<15" );
-  default_list -> add_talent( this, "Barrage", "if=active_enemies>1" );
-  default_list -> add_talent( this, "Chimaera Shot", "if=spell_targets>1");
-  default_list -> add_action( this, "Multi-Shot", "if=spell_targets>1&gcd.max-pet.cat.buff.beast_cleave.remains>0.25" );
-  default_list -> add_action( this, "Kill Command" );
-  default_list -> add_talent( this, "Chimaera Shot" );
-  default_list -> add_talent( this, "A Murder of Crows" );
-  default_list -> add_talent( this, "Dire Beast" );
-  default_list -> add_action( this, "Barbed Shot", "if=pet.cat.buff.frenzy.down&(charges_fractional>1.8|buff.bestial_wrath.up)|cooldown.aspect_of_the_wild.remains<6&azerite.primal_instincts.enabled|target.time_to_die<9" );
-  default_list -> add_talent( this, "Barrage" );
-  default_list -> add_action( this, "Cobra Shot", "if=(active_enemies<2|cooldown.kill_command.remains>focus.time_to_max)&(focus-cost+focus.regen*(cooldown.kill_command.remains-1)>action.kill_command.cost|cooldown.kill_command.remains>1+gcd)&cooldown.kill_command.remains>1" );
-  // Arcane torrent if nothing else is available
-  default_list -> add_action( "arcane_torrent" );
+  st -> add_action( this, "Barbed Shot", "if=pet.cat.buff.frenzy.up&pet.cat.buff.frenzy.remains<=gcd.max|full_recharge_time<gcd.max&cooldown.bestial_wrath.remains|azerite.primal_instincts.enabled&cooldown.aspect_of_the_wild.remains<gcd" );
+  st -> add_action( this, "Aspect of the Wild" );
+  st -> add_talent( this, "A Murder of Crows" );
+  st -> add_talent( this, "Stampede", "if=buff.aspect_of_the_wild.up&buff.bestial_wrath.up|target.time_to_die<15" );
+  st -> add_action( this, "Bestial Wrath", "if=cooldown.aspect_of_the_wild.remains>20|target.time_to_die<15" );
+  st -> add_action( this, "Kill Command" );
+  st -> add_talent( this, "Chimaera Shot" );
+  st -> add_talent( this, "Dire Beast" );
+  st -> add_action( this, "Barbed Shot", "if=pet.cat.buff.frenzy.down&(charges_fractional>1.8|buff.bestial_wrath.up)|cooldown.aspect_of_the_wild.remains<pet.cat.buff.frenzy.duration-gcd&azerite.primal_instincts.enabled|target.time_to_die<9" );
+  st -> add_talent( this, "Barrage" );
+  st -> add_action( this, "Cobra Shot", "if=(focus-cost+focus.regen*(cooldown.kill_command.remains-1)>action.kill_command.cost|cooldown.kill_command.remains>1+gcd)&cooldown.kill_command.remains>1" );
+  st -> add_talent( this, "Spitting Cobra" );
+
+  cleave -> add_action( this, "Barbed Shot", "if=pet.cat.buff.frenzy.up&pet.cat.buff.frenzy.remains<=gcd.max" );
+  cleave -> add_action( this, "Multi-Shot", "if=gcd.max-pet.cat.buff.beast_cleave.remains>0.25" );
+  cleave -> add_action( this, "Barbed Shot", "if=full_recharge_time<gcd.max&cooldown.bestial_wrath.remains" );
+  cleave -> add_action( this, "Aspect of the Wild" );
+  cleave -> add_talent( this, "Stampede", "if=buff.aspect_of_the_wild.up&buff.bestial_wrath.up|target.time_to_die<15" );
+  cleave -> add_action( this, "Bestial Wrath", "if=cooldown.aspect_of_the_wild.remains>20|target.time_to_die<15" );
+  cleave -> add_talent( this, "Chimaera Shot" );
+  cleave -> add_talent( this, "A Murder of Crows" );
+  cleave -> add_talent( this, "Barrage" );
+  cleave -> add_action( this, "Kill Command" );
+  cleave -> add_talent( this, "Dire Beast" );
+  cleave -> add_action( this, "Barbed Shot", "if=pet.cat.buff.frenzy.down&(charges_fractional>1.8|buff.bestial_wrath.up)|cooldown.aspect_of_the_wild.remains<pet.cat.buff.frenzy.duration-gcd&azerite.primal_instincts.enabled|target.time_to_die<9" );
+  cleave -> add_action( this, "Cobra Shot", "if=cooldown.kill_command.remains>focus.time_to_max" );
+  cleave -> add_talent( this, "Spitting Cobra" );
 }
 
 // Marksman Action List ======================================================================
@@ -5207,27 +5257,30 @@ void hunter_t::apl_mm()
   default_list -> add_action( "call_action_list,name=trickshots,if=active_enemies>2" );
 
   cds -> add_talent( this, "Hunter's Mark", "if=debuff.hunters_mark.down" );
-  cds -> add_talent( this, "Double Tap", "if=target.time_to_die<15|cooldown.aimed_shot.remains<gcd&(buff.trueshot.up&(buff.unerring_vision.stack>7|!azerite.unerring_vision.enabled)|!talent.calling_the_shots.enabled)&(!azerite.surging_shots.enabled&!talent.streamline.enabled&!azerite.focused_fire.enabled)");
-  cds -> add_talent( this, "Double Tap", "if=cooldown.rapid_fire.remains<gcd&(buff.trueshot.up&(buff.unerring_vision.stack>7|!azerite.unerring_vision.enabled)|!talent.calling_the_shots.enabled)&(azerite.surging_shots.enabled|talent.streamline.enabled|azerite.focused_fire.enabled)");
+  cds -> add_talent( this, "Double Tap", "if=cooldown.rapid_fire.remains<gcd.max|target.time_to_die<20" );
 
   // Racials
-  cds -> add_action("berserking,if=cooldown.trueshot.remains>60");
-  for ( std::string racial : { "blood_fury", "ancestral_call", "fireblood" } )
-    cds -> add_action( racial + ",if=cooldown.trueshot.remains>30" );
+  cds -> add_action( "berserking,if=buff.trueshot.up&(target.time_to_die>cooldown.berserking.duration+duration|(target.health.pct<20|!talent.careful_aim.enabled))|target.time_to_die<13" );
+  cds -> add_action( "blood_fury,if=buff.trueshot.up&(target.time_to_die>cooldown.blood_fury.duration+duration|(target.health.pct<20|!talent.careful_aim.enabled))|target.time_to_die<16" );
+  cds -> add_action( "ancestral_call,if=buff.trueshot.up&(target.time_to_die>cooldown.ancestral_call.duration+duration|(target.health.pct<20|!talent.careful_aim.enabled))|target.time_to_die<16" );
+  cds -> add_action( "fireblood,if=buff.trueshot.up&(target.time_to_die>cooldown.fireblood.duration+duration|(target.health.pct<20|!talent.careful_aim.enabled))|target.time_to_die<9" );
   cds -> add_action( "lights_judgment" );
 
   // In-combat potion
-  cds -> add_action( "potion,if=buff.trueshot.react&buff.bloodlust.react|buff.trueshot.up&target.health.pct<20&talent.careful_aim.enabled|target.time_to_die<25" );
+  cds -> add_action( "potion,if=buff.trueshot.react&buff.bloodlust.react|buff.trueshot.up&ca_execute|target.time_to_die<25" );
+
   cds -> add_action( this, "Trueshot", "if=cooldown.rapid_fire.remains&target.time_to_die>cooldown.trueshot.duration_guess+duration|(target.health.pct<20|!talent.careful_aim.enabled)|target.time_to_die<15" );
 
   st -> add_talent( this, "Explosive Shot" );
   st -> add_talent( this, "Barrage", "if=active_enemies>1" );
   st -> add_talent( this, "A Murder of Crows" );
   st -> add_talent( this, "Serpent Sting", "if=refreshable&!action.serpent_sting.in_flight" );
-  st -> add_action( this, "Aimed Shot", "if=buff.precise_shots.down|cooldown.aimed_shot.full_recharge_time<action.aimed_shot.cast_time" );
-  st -> add_action( this, "Rapid Fire", "if=focus+cast_regen<focus.max|azerite.focused_fire.enabled|azerite.in_the_rhythm.rank>1|azerite.surging_shots.enabled|talent.streamline.enabled|buff.trueshot.up" );
+  st -> add_action( this, "Rapid Fire", "if=focus<50|buff.in_the_rhythm.remains<action.rapid_fire.cast_time");
+  st -> add_action( this, "Arcane Shot", "if=buff.master_marksman.up&buff.trueshot.up&focus+cast_regen<focus.max");
+  st -> add_action( this, "Aimed Shot", "if=(!buff.double_tap.up|ca_execute|(!azerite.focused_fire.enabled&!azerite.surging_shots.enabled&!talent.streamline.enabled))&buff.precise_shots.down|cooldown.aimed_shot.full_recharge_time<action.aimed_shot.cast_time|buff.trueshot.up" );
+  st -> add_action( this, "Rapid Fire", "if=focus+cast_regen<focus.max|azerite.focused_fire.enabled|azerite.in_the_rhythm.rank>1|azerite.surging_shots.enabled|talent.streamline.enabled" );
   st -> add_talent( this, "Piercing Shot" );
-  st -> add_action( this, "Arcane Shot", "if=focus>60|buff.precise_shots.up" );
+  st -> add_action( this, "Arcane Shot", "if=focus>75|(buff.precise_shots.up|focus>45&cooldown.trueshot.remains&target.time_to_die<25)&buff.trueshot.down|target.time_to_die<5" );
   st -> add_action( this, "Steady Shot" );
 
   trickshots -> add_talent( this, "Barrage" );
@@ -5264,7 +5317,7 @@ void hunter_t::apl_surv()
   default_list -> add_action( "call_action_list,name=cds" );
   default_list -> add_action( "call_action_list,name=mb_ap_wfi_st,if=active_enemies<3&talent.wildfire_infusion.enabled&talent.alpha_predator.enabled&talent.mongoose_bite.enabled" );
   default_list -> add_action( "call_action_list,name=wfi_st,if=active_enemies<3&talent.wildfire_infusion.enabled");
-  default_list -> add_action( "call_action_list,name=st,if=active_enemies<2" );
+  default_list -> add_action( "call_action_list,name=st,if=active_enemies<2|azerite.blur_of_talons.enabled&talent.birds_of_prey.enabled&buff.coordinated_assault.up" );
   default_list -> add_action( "call_action_list,name=cleave,if=active_enemies>1" );
   // Arcane torrent if nothing else is available
   default_list -> add_action( "arcane_torrent" );
@@ -5273,7 +5326,7 @@ void hunter_t::apl_surv()
   for ( std::string racial : { "blood_fury", "ancestral_call", "fireblood" } )
     cds -> add_action( racial + ",if=cooldown.coordinated_assault.remains>30" );
   cds -> add_action( "lights_judgment" );
-  cds -> add_action( "berserking,if=cooldown.coordinated_assault.remains>60|time_to_die<11");
+  cds -> add_action( "berserking,if=cooldown.coordinated_assault.remains>60|time_to_die<13");
 
   // In-combat potion
   cds -> add_action( "potion,if=buff.coordinated_assault.up&(buff.berserking.up|buff.blood_fury.up|!race.troll&!race.orc)|time_to_die<26" );

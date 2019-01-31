@@ -26,7 +26,6 @@ namespace warlock
 
       propagate_const<buff_t*> debuffs_haunt;
       propagate_const<buff_t*> debuffs_shadow_embrace;
-      propagate_const<buff_t*> debuffs_tormented_agony;
 
       //Destro
       propagate_const<dot_t*> dots_immolate;
@@ -62,7 +61,8 @@ namespace warlock
     struct warlock_t : public player_t
     {
     public:
-      player_t * havoc_target;
+      player_t* havoc_target;
+      std::vector<action_t*> havoc_spells;  // Used for smarter target cache invalidation.
       bool wracking_brilliance;
       double agony_accumulator;
 
@@ -105,7 +105,6 @@ namespace warlock
       struct active_t
       {
         action_t* grimoire_of_sacrifice_proc;
-        action_t* tormented_agony;
         action_t* chaotic_flames;
         spell_t* pandemic_invocation;
         spell_t* corruption;
@@ -237,7 +236,6 @@ namespace warlock
       } mastery_spells;
 
       //Procs and RNG
-      propagate_const<real_ppm_t*> affliction_t20_2pc_rppm;
       propagate_const<real_ppm_t*> grimoire_of_sacrifice_rppm; // grimoire of sacrifice
 
       // Cooldowns
@@ -301,7 +299,6 @@ namespace warlock
         propagate_const<buff_t*> drain_life;
         propagate_const<buff_t*> nightfall;
         propagate_const<buff_t*> dark_soul_misery;
-        propagate_const<buff_t*> demonic_speed; // t20 4pc
 
         propagate_const<buff_t*> cascading_calamity;
         propagate_const<buff_t*> inevitable_demise;
@@ -312,8 +309,6 @@ namespace warlock
         propagate_const<buff_t*> demonic_calling;
         propagate_const<buff_t*> inner_demons;
         propagate_const<buff_t*> nether_portal;
-        propagate_const<buff_t*> dreaded_haste; // t20 4pc
-        propagate_const<buff_t*> rage_of_guldan; // t21 2pc
         propagate_const<buff_t*> wild_imps;
         propagate_const<buff_t*> dreadstalkers;
         propagate_const<buff_t*> vilefiend;
@@ -330,7 +325,6 @@ namespace warlock
 
         //destruction_buffs
         propagate_const<buff_t*> backdraft;
-        propagate_const<buff_t*> active_havoc;
         propagate_const<buff_t*> reverse_entropy;
         propagate_const<buff_t*> grimoire_of_supremacy;
         propagate_const<buff_t*> dark_soul_instability;
@@ -377,10 +371,6 @@ namespace warlock
         gain_t* baleful_invocation;
 
         gain_t* soulsnatcher;
-        gain_t* t19_2pc_demonology;
-
-        gain_t* affliction_t20_2pc;
-        gain_t* destruction_t20_2pc;
       } gains;
 
       // Procs
@@ -389,7 +379,6 @@ namespace warlock
         proc_t* soul_conduit;
         //aff
         proc_t* nightfall;
-        proc_t* affliction_t21_2pc;
         //demo
         proc_t* demonic_calling;
         proc_t* souls_consumed;
@@ -401,7 +390,6 @@ namespace warlock
         proc_t* dreadstalker_debug;
         proc_t* summon_random_demon;
         proc_t* portal_summon;
-        proc_t* demonology_t20_2pc;
         //destro
         proc_t* reverse_entropy;
       } procs;
